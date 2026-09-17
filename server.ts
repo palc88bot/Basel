@@ -11,7 +11,9 @@ import {
   serverVault,
   HybridExitSystem,
   precisionManager,
-  UserDataStreamListener
+  UserDataStreamListener,
+  OrderBookSimulator,
+  PaperTradingEngine
 } from "./src/execution/index";
 import {
   SafeCoinFilter,
@@ -24,8 +26,18 @@ import {
   SmartPairSelector,
   CircuitBreakersManager,
   StateDatabase,
-  QuantBackgroundWorker
+  QuantBackgroundWorker,
+  PointInTimeDatabase,
+  BacktestingEngine,
+  BacktestConfig,
+  PerformanceMetrics,
+  ChampionChallenger,
+  StrategyConfig
 } from "./src/quant/index";
+import { DashboardAPI } from "./src/dashboard/DashboardAPI";
+import { KillSwitch } from "./src/execution/KillSwitch";
+import { BrokerReconciliation } from "./src/execution/BrokerReconciliation";
+import { StressTester } from "./src/testing/StressTester";
 
 const app = express();
 const PORT = 3000;
@@ -34,6 +46,125 @@ app.use(express.json());
 
 // Initialize State Persistence Database (SQLite-equivalent JSON store with WAL atomic writes & backups)
 const stateDb = new StateDatabase("./omega_state.json");
+
+// ==========================================
+// 📊 POINT-IN-TIME HISTORICAL DATABASE (Look-Ahead Bias Protected)
+// ==========================================
+const pointInTimeDb = new PointInTimeDatabase("./data/point_in_time_db.json");
+
+// ==========================================
+// 📊 REALISTIC ORDER BOOK & PAPER TRADING ENGINE
+// ==========================================
+const orderBookSim = new OrderBookSimulator();
+
+const paperEngine = new PaperTradingEngine(
+  {
+    initialBalance: 1000,        // $1000 initial balance
+    leverage: 5,                 // 5x leverage
+    makerFeeRate: 0.0002,        // 0.02% maker fee
+    takerFeeRate: 0.00055,       // 0.055% taker fee
+    fundingRateInterval: 8,      // 8-hour funding rate intervals
+    slippageMultiplier: 1.0,     // 1.0x realistic depth slippage
+    latencyMinMs: 50,            // 50ms min latency
+    latencyMaxMs: 150,           // 150ms max latency
+    maxPositionSizePct: 0.05     // 5% max position allocation
+  },
+  orderBookSim
+);
+
+// ==========================================
+// 📊 TRANSPARENT QUANT DASHBOARD API
+// ==========================================
+const dashboard = new DashboardAPI(paperEngine);
+
+// ==========================================
+// 🚨 INDEPENDENT KILL SWITCH
+// ==========================================
+const killSwitch = new KillSwitch({
+  filePath: './data/kill_switch.json',
+  notificationWebhook: process.env.TELEGRAM_WEBHOOK_URL
+});
+
+// ==========================================
+// 🔄 BROKER RECONCILIATION
+// ==========================================
+const brokerReconciliation = new BrokerReconciliation(
+  {
+    intervalMs: 24 * 60 * 60 * 1000,
+    maxDriftPct: 0.01,
+    autoFixOrphans: true,
+    alertThreshold: 2
+  },
+  paperEngine,
+  stateDb
+);
+
+// ==========================================
+// 🏆 CHAMPION / CHALLENGER FRAMEWORK
+// ==========================================
+const championConfig: StrategyConfig = {
+  name: 'Champion Mean-Reversion v1',
+  entryZThreshold: 1.8,
+  exitZThreshold: 0,
+  stopLossPct: 0.03,
+  takeProfitPct: 0.05,
+  maxTradeDurationHours: 4,
+  positionSizePct: 0.05
+};
+
+const challengerConfig: StrategyConfig = {
+  name: 'Challenger Fast-Kalman v2',
+  entryZThreshold: 2.0,
+  exitZThreshold: 0,
+  stopLossPct: 0.025,
+  takeProfitPct: 0.06,
+  maxTradeDurationHours: 6,
+  positionSizePct: 0.04
+};
+
+const championChallenger = new ChampionChallenger(championConfig, challengerConfig);
+
+// Hook Kill Switch Listener
+killSwitch.addListener(() => {
+  console.error('🚨 [Server] Kill Switch triggered - stopping quant worker and liquidating positions...');
+  quantBackgroundWorker.pause();
+  
+  // Close all open paper positions
+  const positions = Array.from(paperEngine.getPositions().keys());
+  for (const symbol of positions) {
+    paperEngine.closePosition(symbol).catch(err => {
+      console.error(`[Server] Failed to emergency close ${symbol}:`, err);
+    });
+  }
+  
+  alertLogs.unshift({
+    id: `KILL-${Date.now()}`,
+    timestamp: new Date().toLocaleTimeString('ar-SA'),
+    level: 'CRITICAL',
+    title: '🚨 KILL SWITCH ACTIVATED',
+    message: 'تم تفعيل مفتاح الطوارئ وإيقاف كافة المعالجات الكمية وتصفية المراكز المفتوحة فورياً.',
+    channel: 'SYSTEM'
+  });
+});
+
+// Guard paper trading execution if Kill Switch is armed
+const originalExecuteBuy = paperEngine.executeBuy.bind(paperEngine);
+paperEngine.executeBuy = async (...args) => {
+  if (killSwitch.isArmed()) {
+    console.error('🚨 Kill Switch is armed - rejecting BUY order');
+    return { orderId: 'REJECTED_BY_KILL_SWITCH', status: 'REJECTED' } as any;
+  }
+  return originalExecuteBuy(...args);
+};
+
+const originalOpenShort = paperEngine.openShort.bind(paperEngine);
+paperEngine.openShort = async (...args) => {
+  if (killSwitch.isArmed()) {
+    console.error('🚨 Kill Switch is armed - rejecting SHORT order');
+    return { orderId: 'REJECTED_BY_KILL_SWITCH', status: 'REJECTED' } as any;
+  }
+  return originalOpenShort(...args);
+};
 
 // Initialize Core OMEGA Integrated Quant Modules (SafeCoinFilter, EquityTracker, ExtremeZAlerts, KalmanFilter, SmartPairSelector, CircuitBreakers)
 const safeCoinFilter = new SafeCoinFilter({
@@ -142,228 +273,12 @@ const BLACKLISTED_COINS = new Set([
 ]);
 const INSTITUTIONAL_BLACKLIST = BLACKLISTED_COINS;
 
-// Top 20 High-Liquidity Futures Pairs Master List
-const TOP_20_FUTURES = [
-  {
-    symbol: "BTCUSDT",
-    nameAr: "بيتكوين",
-    basePrice: 75420,
-    volume24hUsd: 18450000000,
-    fundingRate: 0.00012,
-    spreadPct: 0.008,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 5,
-    liquidityRank: 1
-  },
-  {
-    symbol: "ETHUSDT",
-    nameAr: "إيثيريوم",
-    basePrice: 2415,
-    volume24hUsd: 9230000000,
-    fundingRate: 0.00009,
-    spreadPct: 0.0001,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 5,
-    liquidityRank: 2
-  },
-  {
-    symbol: "SOLUSDT",
-    nameAr: "سولانا",
-    basePrice: 138.80,
-    volume24hUsd: 4120000000,
-    fundingRate: 0.00015,
-    spreadPct: 0.0002,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 4,
-    liquidityRank: 3
-  },
-  {
-    symbol: "BNBUSDT",
-    nameAr: "بينانس كوين",
-    basePrice: 582.40,
-    volume24hUsd: 1450000000,
-    fundingRate: 0.00008,
-    spreadPct: 0.0001,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 4,
-    liquidityRank: 4
-  },
-  {
-    symbol: "XRPUSDT",
-    nameAr: "ريبل",
-    basePrice: 0.587,
-    volume24hUsd: 1890000000,
-    fundingRate: 0.00011,
-    spreadPct: 0.0002,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 5
-  },
-  {
-    symbol: "DOGEUSDT",
-    nameAr: "دوجكوين",
-    basePrice: 0.1065,
-    volume24hUsd: 1320000000,
-    fundingRate: 0.00018,
-    spreadPct: 0.0003,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 6
-  },
-  {
-    symbol: "ADAUSDT",
-    nameAr: "كاردانو",
-    basePrice: 0.354,
-    volume24hUsd: 870000000,
-    fundingRate: 0.00010,
-    spreadPct: 0.0002,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 7
-  },
-  {
-    symbol: "AVAXUSDT",
-    nameAr: "أفالانش",
-    basePrice: 24.95,
-    volume24hUsd: 780000000,
-    fundingRate: 0.00013,
-    spreadPct: 0.0002,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 8
-  },
-  {
-    symbol: "SUIUSDT",
-    nameAr: "سوي",
-    basePrice: 1.645,
-    volume24hUsd: 1120000000,
-    fundingRate: 0.00021,
-    spreadPct: 0.0003,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 9
-  },
-  {
-    symbol: "LINKUSDT",
-    nameAr: "تشين لينك",
-    basePrice: 11.55,
-    volume24hUsd: 640000000,
-    fundingRate: 0.00011,
-    spreadPct: 0.0002,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 10
-  },
-  {
-    symbol: "NEARUSDT",
-    nameAr: "نير بروتوكول",
-    basePrice: 4.85,
-    volume24hUsd: 590000000,
-    fundingRate: 0.00014,
-    spreadPct: 0.0002,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 11
-  },
-  {
-    symbol: "APTUSDT",
-    nameAr: "أبتوس",
-    basePrice: 8.20,
-    volume24hUsd: 540000000,
-    fundingRate: 0.00016,
-    spreadPct: 0.0002,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 12
-  },
-  {
-    symbol: "PEPEUSDT",
-    nameAr: "بيبي",
-    basePrice: 0.0000095,
-    volume24hUsd: 1250000000,
-    fundingRate: 0.00025,
-    spreadPct: 0.0003,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 13
-  },
-  {
-    symbol: "SHIBUSDT",
-    nameAr: "شيبا إينو",
-    basePrice: 0.0000175,
-    volume24hUsd: 480000000,
-    fundingRate: 0.00012,
-    spreadPct: 0.0003,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 14
-  },
-  {
-    symbol: "POLUSDT",
-    nameAr: "بوليكون (POL)",
-    basePrice: 0.385,
-    volume24hUsd: 420000000,
-    fundingRate: 0.00010,
-    spreadPct: 0.0002,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 15
-  },
-  {
-    symbol: "DOTUSDT",
-    nameAr: "بولكادوت",
-    basePrice: 4.35,
-    volume24hUsd: 390000000,
-    fundingRate: 0.00009,
-    spreadPct: 0.0002,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 16
-  },
-  {
-    symbol: "LTCUSDT",
-    nameAr: "لايتكوين",
-    basePrice: 65.20,
-    volume24hUsd: 360000000,
-    fundingRate: 0.00008,
-    spreadPct: 0.0002,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 17
-  },
-  {
-    symbol: "FETUSDT",
-    nameAr: "ذكاء اصطناعي (FET)",
-    basePrice: 1.35,
-    volume24hUsd: 510000000,
-    fundingRate: 0.00019,
-    spreadPct: 0.0004,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 18
-  },
-  {
-    symbol: "ARBUSDT",
-    nameAr: "أربيتروم",
-    basePrice: 0.54,
-    volume24hUsd: 340000000,
-    fundingRate: 0.00011,
-    spreadPct: 0.0003,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 19
-  },
-  {
-    symbol: "OPUSDT",
-    nameAr: "أوبتيميزم",
-    basePrice: 1.42,
-    volume24hUsd: 320000000,
-    fundingRate: 0.00012,
-    spreadPct: 0.0003,
-    minNotionalUsd: 5.0,
-    recommendedLeverage: 3,
-    liquidityRank: 20
-  }
+// High-Liquidity Futures Pairs Focus Watchlist (Symbols only - 100% Live Market Prices)
+const TOP_WATCHLIST_SYMBOLS = [
+  "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+  "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "SUIUSDT", "LINKUSDT",
+  "NEARUSDT", "APTUSDT", "PEPEUSDT", "SHIBUSDT", "POLUSDT",
+  "DOTUSDT", "LTCUSDT", "FETUSDT", "ARBUSDT", "OPUSDT"
 ];
 
 // Arabic coin name dictionary for clear display
@@ -448,7 +363,7 @@ async function fetchRealMarketTickers(): Promise<{ liveTickers: Map<string, any>
   return { liveTickers, exchangeName };
 }
 
-// Unified Background Worker Pipeline: runs non-blocking continuous quant & Kalman calibration in the background
+// Unified Background Worker Pipeline: runs non-blocking continuous quant & Kalman calibration in the background (24/7 Daemon)
 const quantBackgroundWorker = new QuantBackgroundWorker(
   {
     fetchTickers: fetchRealMarketTickers,
@@ -458,12 +373,147 @@ const quantBackgroundWorker = new QuantBackgroundWorker(
     kalmanFiltersMap,
     zAlertSystem,
     blacklist: BLACKLISTED_COINS,
-    arabicNames: ARABIC_COIN_NAMES
+    arabicNames: ARABIC_COIN_NAMES,
+    executor,
+    hybridExit,
+    stateDb,
+    circuitBreakers,
+    precisionManager,
+    pointInTimeDb
   },
   {
-    intervalMs: 8000 // continuous 8-second tick cycle
+    intervalMs: 8000,               // continuous 8-second tick cycle
+    maxPairsPerCycle: 50,           // examine up to 50 active pairs
+    minVolumeUsd: 10_000_000,       // $10M minimum liquidity
+    entryZThreshold: 1.8,           // quantitative entry threshold
+    maxConcurrentPositions: 3,      // risk limit: max 3 simultaneous positions
+    enableAutoTrading: false,       // safe mode by default
+    tradeAllocationPct: 0.05        // 5% allocation per trade
   }
 );
+
+// Register Quant Worker Callbacks for Telemetry & Alert Logging
+quantBackgroundWorker.setCallbacks({
+  onCycleComplete: (result) => {
+    if (result.status === 'FAILED') {
+      alertLogs.unshift({
+        id: `WRK-${result.cycleId}-${Date.now()}`,
+        timestamp: new Date().toLocaleTimeString('ar-SA'),
+        level: 'WARNING',
+        title: `⚠️ تعذر إكمال دورة المعالجة الخلفية #${result.cycleId}`,
+        message: result.errors.join('; '),
+        channel: 'SYSTEM'
+      });
+      if (alertLogs.length > 50) alertLogs = alertLogs.slice(0, 50);
+    }
+  },
+  onSignalGenerated: (signal) => {
+    console.log(`[QuantWorker Signal] ${signal.symbol}: ${signal.signal} (Z=${signal.zScore.toFixed(2)}, HL=${signal.halfLifeSec}s)`);
+    const rejectionReason = signal.filterReason || signal.signalReasonAr;
+    if (rejectionReason && signal.signal === 'NEUTRAL') {
+      dashboard.recordRejectedSignal(signal.symbol, rejectionReason);
+    }
+  },
+  onTradeExecuted: (trade) => {
+    alertLogs.unshift({
+      id: `TRD-${Date.now()}`,
+      timestamp: new Date().toLocaleTimeString('ar-SA'),
+      level: 'INFO',
+      title: `🟢 تنفيذ صفقة آلية: ${trade.symbol}`,
+      message: `تم تنفيذ أمر ${trade.side} على زوج ${trade.symbol} بسعر ${trade.price} وبكمية ${trade.quantity} (Z=${trade.zScore.toFixed(2)}) مع تسليح الوقف الكارثي 3%.`,
+      channel: 'TELEGRAM'
+    });
+    if (alertLogs.length > 50) alertLogs = alertLogs.slice(0, 50);
+  },
+  onError: (error) => {
+    console.error('[QuantWorker Daemon Error]', error);
+  }
+});
+
+// ==========================================
+// 🎮 QUANT WORKER 24/7 CONTROL ENDPOINTS
+// ==========================================
+
+// 1. حالة العامل المستقل
+app.get("/api/worker/status", (req, res) => {
+  res.json({
+    success: true,
+    ...quantBackgroundWorker.getStatus()
+  });
+});
+
+// 2. سجل تاريخ الدورات السابقة
+app.get("/api/worker/history", (req, res) => {
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
+  res.json({
+    success: true,
+    cycles: quantBackgroundWorker.getCycleHistory(limit)
+  });
+});
+
+// 3. إيقاف مؤقت
+app.post("/api/worker/pause", (req, res) => {
+  quantBackgroundWorker.pause();
+  res.json({ success: true, message: "تم إيقاف المعالج الكمي مؤقتاً" });
+});
+
+// 4. استئناف العمل
+app.post("/api/worker/resume", (req, res) => {
+  quantBackgroundWorker.resume();
+  res.json({ success: true, message: "تم استئناف تشغيل المعالج الكمي 24/7 بنجاح" });
+});
+
+// 5. 🚨 مفتاح الإيقاف الطارئ الفوري (Kill Switch)
+app.post("/api/worker/emergency-stop", async (req, res) => {
+  try {
+    const result = await quantBackgroundWorker.emergencyStop();
+    alertLogs.unshift({
+      id: `EMERGENCY-${Date.now()}`,
+      timestamp: new Date().toLocaleTimeString('ar-SA'),
+      level: 'CRITICAL',
+      title: '🚨 تفعيل مفتاح الإيقاف الطارئ (KILL SWITCH)',
+      message: `تم إيقاف كافة عمليات التداول وإلغاء الأوامر المفتوحة فوراً (${result.cancelledOrders} أمر).`,
+      channel: 'SYSTEM'
+    });
+    if (alertLogs.length > 50) alertLogs = alertLogs.slice(0, 50);
+
+    res.json({
+      success: true,
+      ...result
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 6. تحديث إعدادات العامل
+app.post("/api/worker/config", (req, res) => {
+  const {
+    intervalMs,
+    maxPairsPerCycle,
+    minVolumeUsd,
+    entryZThreshold,
+    maxConcurrentPositions,
+    enableAutoTrading,
+    tradeAllocationPct
+  } = req.body;
+
+  quantBackgroundWorker.setConfig({
+    ...(intervalMs !== undefined && { intervalMs: Number(intervalMs) }),
+    ...(maxPairsPerCycle !== undefined && { maxPairsPerCycle: Number(maxPairsPerCycle) }),
+    ...(minVolumeUsd !== undefined && { minVolumeUsd: Number(minVolumeUsd) }),
+    ...(entryZThreshold !== undefined && { entryZThreshold: Number(entryZThreshold) }),
+    ...(maxConcurrentPositions !== undefined && { maxConcurrentPositions: Number(maxConcurrentPositions) }),
+    ...(enableAutoTrading !== undefined && { enableAutoTrading: Boolean(enableAutoTrading) }),
+    ...(tradeAllocationPct !== undefined && { tradeAllocationPct: Number(tradeAllocationPct) })
+  });
+
+  res.json({
+    success: true,
+    message: "تم تحديث إعدادات المعالج الكمي بنجاح",
+    config: quantBackgroundWorker.getStatus().config
+  });
+});
 
 // Full Exchange Futures Scanner Endpoint (Powered by Non-Blocking Background Worker)
 app.get("/api/quant/futures-pairs", async (req, res) => {
@@ -1340,6 +1390,7 @@ app.post("/api/execution/toggle-auto-engine", (req, res) => {
     isAutoEngineActive = !isAutoEngineActive;
   }
   stateDb.setAutoEngineActive(isAutoEngineActive);
+  quantBackgroundWorker.setConfig({ enableAutoTrading: isAutoEngineActive });
 
   alertLogs.unshift({
     id: `ALT-${Date.now().toString().slice(-6)}`,
@@ -1365,17 +1416,49 @@ app.post("/api/execution/trigger-manual-auto-trade", async (req, res) => {
 });
 
 // ==========================================
-// 🛡️ OMEGA QUANT MODULES ENDPOINTS (CoinFilter, EquityTracker, Z-Alerts)
+// 🛡️ OMEGA QUANT MODULES ENDPOINTS (CoinFilter, EquityTracker, Z-Alerts, PIT, DecisionRecords, QuantumOptimizer)
 // ==========================================
 
 // 1. SafeCoinFilter Report
 app.get("/api/quant/coin-filter/report", (req, res) => {
   const activeOrders = orderTracker.getActiveOrders();
-  const symbols = TOP_20_FUTURES.map(p => p.symbol);
+  const symbols = TOP_WATCHLIST_SYMBOLS;
   const reportText = safeCoinFilter.getReport(symbols);
   res.json({
     success: true,
     report: reportText
+  });
+});
+
+// Point-in-Time Data Store (Audited Manifest & Historical Snaps)
+app.get("/api/quant/point-in-time", (req, res) => {
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit as string) || 20));
+  res.json({
+    success: true,
+    manifest: quantBackgroundWorker.pitStore.getManifest(limit),
+    latestSnapshot: quantBackgroundWorker.pitStore.getLatestSnapshot(),
+    stats: quantBackgroundWorker.pitStore.getStats()
+  });
+});
+
+// Signal Decision Record (Audit Trail for Every Evaluated Coin)
+app.get("/api/quant/decision-records", (req, res) => {
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 30));
+  const filterSymbol = req.query.symbol as string | undefined;
+  res.json({
+    success: true,
+    decisions: quantBackgroundWorker.decisionRecorder.getRecentDecisions(limit, filterSymbol),
+    stats: quantBackgroundWorker.decisionRecorder.getStats()
+  });
+});
+
+// Quantum-Inspired Portfolio Optimizer Status
+app.get("/api/quant/quantum-optimizer", (req, res) => {
+  const snapshot = quantBackgroundWorker.getSnapshot();
+  res.json({
+    success: true,
+    quantumPortfolio: snapshot?.quantumPortfolio || null,
+    timestamp: Date.now()
   });
 });
 
@@ -2003,6 +2086,761 @@ app.post("/api/vault/test-connection", async (req, res) => {
       message: `فشل الاتصال: ${err.message}`
     });
   }
+});
+
+// ==========================================
+// 📊 POINT-IN-TIME DATABASE ENDPOINTS (Look-Ahead Bias Protected)
+// ==========================================
+
+// إحصائيات قاعدة البيانات
+app.get('/api/pit-db/stats', (req, res) => {
+  res.json({
+    success: true,
+    stats: pointInTimeDb.getStats(),
+    symbols: pointInTimeDb.getAvailableSymbols()
+  });
+});
+
+// استرجاع النقاط السعرية
+app.get('/api/pit-db/ticks/:symbol', (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const startTime = parseInt(req.query.startTime as string) || Date.now() - 3600000; // آخر ساعة
+    const endTime = parseInt(req.query.endTime as string) || Date.now();
+    const maxPoints = parseInt(req.query.maxPoints as string) || 1000;
+    
+    const ticks = pointInTimeDb.getTicks({
+      symbol,
+      startTime,
+      endTime,
+      maxPoints
+    });
+    
+    res.json({
+      success: true,
+      symbol,
+      count: ticks.length,
+      ticks
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// استرجاع الشموع (مغلقة فقط)
+app.get('/api/pit-db/candles/:symbol', (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const startTime = parseInt(req.query.startTime as string) || Date.now() - 86400000; // آخر 24 ساعة
+    const endTime = parseInt(req.query.endTime as string) || Date.now();
+    const maxPoints = parseInt(req.query.maxPoints as string) || 500;
+    const includeIncomplete = req.query.includeIncomplete === 'true';
+    
+    const candles = pointInTimeDb.getCandles({
+      symbol,
+      startTime,
+      endTime,
+      maxPoints,
+      includeIncomplete
+    });
+    
+    res.json({
+      success: true,
+      symbol,
+      count: candles.length,
+      includeIncomplete,
+      candles
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// استرجاع آخر شمعة مغلقة (الأهم لـ Backtesting)
+app.get('/api/pit-db/last-closed-candle/:symbol', (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const candle = pointInTimeDb.getLastClosedCandle(symbol);
+    
+    if (!candle) {
+      return res.json({
+        success: false,
+        error: `No closed candle found for ${symbol}`
+      });
+    }
+    
+    res.json({
+      success: true,
+      symbol,
+      candle
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// حفظ نقطة سعرية يدوياً (للاختبار)
+app.post('/api/pit-db/add-tick', (req, res) => {
+  try {
+    const { symbol, price, source } = req.body;
+    
+    if (!symbol || !price) {
+      return res.status(400).json({
+        success: false,
+        error: 'symbol and price are required'
+      });
+    }
+    
+    pointInTimeDb.addTick({
+      symbol,
+      price: Number(price),
+      timestamp: Date.now(),
+      source: source || 'BINANCE'
+    });
+    
+    res.json({
+      success: true,
+      message: 'Tick added successfully'
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// حفظ شموع (للاستيراد)
+app.post('/api/pit-db/add-candles', (req, res) => {
+  try {
+    const { candles } = req.body;
+    
+    if (!Array.isArray(candles)) {
+      return res.status(400).json({
+        success: false,
+        error: 'candles must be an array'
+      });
+    }
+    
+    pointInTimeDb.addCandles(candles);
+    
+    res.json({
+      success: true,
+      message: `${candles.length} candles added successfully`
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// تنظيف يدوي
+app.post('/api/pit-db/cleanup', (req, res) => {
+  pointInTimeDb.cleanup();
+  res.json({
+    success: true,
+    message: 'Cleanup completed',
+    stats: pointInTimeDb.getStats()
+  });
+});
+
+// حفظ يدوي
+app.post('/api/pit-db/save', async (req, res) => {
+  const success = await pointInTimeDb.save();
+  res.json({
+    success,
+    message: success ? 'Database saved successfully' : 'Save failed'
+  });
+});
+
+// ==========================================
+// 📊 REALISTIC PAPER TRADING ENDPOINTS
+// ==========================================
+
+// إحصائيات الـ Paper Trading
+app.get('/api/paper/stats', (req, res) => {
+  res.json({
+    success: true,
+    stats: paperEngine.getStatistics()
+  });
+});
+
+// المراكز المفتوحة
+app.get('/api/paper/positions', (req, res) => {
+  const positions = Array.from(paperEngine.getPositions().values());
+  res.json({
+    success: true,
+    count: positions.length,
+    positions
+  });
+});
+
+// تاريخ الصفقات
+app.get('/api/paper/trades', (req, res) => {
+  const limit = parseInt(req.query.limit as string) || 50;
+  res.json({
+    success: true,
+    trades: paperEngine.getTradeHistory(limit)
+  });
+});
+
+// مقاييس دفتر الأوامر
+app.get('/api/paper/orderbook/:symbol', (req, res) => {
+  const { symbol } = req.params;
+  const metrics = orderBookSim.getMetrics(symbol);
+  const book = orderBookSim.getOrderBook(symbol);
+  res.json({
+    success: !!book,
+    symbol,
+    metrics,
+    orderBook: book
+  });
+});
+
+// تنفيذ أمر شراء ورقي
+app.post('/api/paper/buy', async (req, res) => {
+  try {
+    const { symbol, quantity, orderType = 'MARKET', price } = req.body;
+    
+    if (!symbol || !quantity) {
+      return res.status(400).json({
+        success: false,
+        error: 'symbol and quantity are required'
+      });
+    }
+    
+    const order = await paperEngine.executeBuy(symbol, Number(quantity), orderType, price ? Number(price) : undefined);
+    
+    res.json({
+      success: order.status === 'FILLED',
+      order
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// تنفيذ أمر بيع ورقي
+app.post('/api/paper/sell', async (req, res) => {
+  try {
+    const { symbol, quantity, orderType = 'MARKET', price } = req.body;
+    
+    if (!symbol || !quantity) {
+      return res.status(400).json({
+        success: false,
+        error: 'symbol and quantity are required'
+      });
+    }
+    
+    const order = await paperEngine.executeSell(symbol, Number(quantity), orderType, price ? Number(price) : undefined);
+    
+    res.json({
+      success: order.status === 'FILLED',
+      order
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// فتح مركز بيع مكشوف (Short)
+app.post('/api/paper/short', async (req, res) => {
+  try {
+    const { symbol, quantity } = req.body;
+    if (!symbol || !quantity) {
+      return res.status(400).json({ success: false, error: 'symbol and quantity are required' });
+    }
+    const order = await paperEngine.openShort(symbol, Number(quantity));
+    res.json({ success: order.status === 'FILLED', order });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// إغلاق مركز بيع مكشوف (Close Short)
+app.post('/api/paper/close-short', async (req, res) => {
+  try {
+    const { symbol, quantity } = req.body;
+    if (!symbol || !quantity) {
+      return res.status(400).json({ success: false, error: 'symbol and quantity are required' });
+    }
+    const order = await paperEngine.closeShort(symbol, Number(quantity));
+    res.json({ success: order.status === 'FILLED', order });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ==========================================
+// 📊 BACKTESTING ENDPOINTS (Realistic & Look-Ahead Protected)
+// ==========================================
+
+// تشغيل اختبار رجعي كامل
+app.post('/api/backtest/run', async (req, res) => {
+  try {
+    const {
+      symbol = 'BTCUSDT',
+      startTime,
+      endTime,
+      initialCapital = 1000,
+      entryZThreshold = 1.8,
+      stopLossPct = 0.03,
+      takeProfitPct = 0.05
+    } = req.body;
+    
+    if (!startTime || !endTime) {
+      return res.status(400).json({
+        success: false,
+        error: 'startTime and endTime are required (Unix timestamps in ms)'
+      });
+    }
+    
+    const config: BacktestConfig = {
+      symbol,
+      startTime: Number(startTime),
+      endTime: Number(endTime),
+      initialCapital: Number(initialCapital),
+      leverage: 5,
+      makerFeeRate: 0.0002,
+      takerFeeRate: 0.00055,
+      slippagePct: 0.0005,
+      fundingRatePerPeriod: 0.0001,
+      entryZThreshold: Number(entryZThreshold),
+      exitZThreshold: 0,
+      stopLossPct: Number(stopLossPct),
+      takeProfitPct: Number(takeProfitPct),
+      maxTradeDurationHours: 4,
+      trainRatio: 0.6,
+      validationRatio: 0.2,
+      testRatio: 0.2
+    };
+    
+    const engine = new BacktestingEngine(config, pointInTimeDb);
+    const result = await engine.runFullBacktest();
+    
+    // توليد التقرير
+    const summary = engine.generateSummary(result);
+    
+    res.json({
+      success: true,
+      result: {
+        metrics: result.metrics,
+        trades: result.trades.slice(-20),  // آخر 20 صفقة فقط
+        equityCurve: result.equityCurve.slice(-100),  // آخر 100 نقطة
+        durationMs: result.durationMs
+      },
+      summary
+    });
+    
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// تشغيل Walk-Forward Analysis
+app.post('/api/backtest/walk-forward', async (req, res) => {
+  try {
+    const {
+      symbol = 'BTCUSDT',
+      startTime,
+      endTime,
+      windowSize = 30
+    } = req.body;
+    
+    if (!startTime || !endTime) {
+      return res.status(400).json({
+        success: false,
+        error: 'startTime and endTime are required'
+      });
+    }
+    
+    const config: BacktestConfig = {
+      symbol,
+      startTime: Number(startTime),
+      endTime: Number(endTime),
+      initialCapital: 1000,
+      leverage: 5,
+      makerFeeRate: 0.0002,
+      takerFeeRate: 0.00055,
+      slippagePct: 0.0005,
+      fundingRatePerPeriod: 0.0001,
+      entryZThreshold: 1.8,
+      exitZThreshold: 0,
+      stopLossPct: 0.03,
+      takeProfitPct: 0.05,
+      maxTradeDurationHours: 4,
+      trainRatio: 0.6,
+      validationRatio: 0.2,
+      testRatio: 0.2
+    };
+    
+    const engine = new BacktestingEngine(config, pointInTimeDb);
+    const results = await engine.runWalkForward(Number(windowSize));
+    
+    // حساب متوسط التدهور
+    const avgDegradation = results.length > 0
+      ? results.reduce((sum, r) => sum + r.degradation, 0) / results.length
+      : 0;
+    
+    res.json({
+      success: true,
+      windows: results.length,
+      avgDegradation: parseFloat(avgDegradation.toFixed(3)),
+      results: results.map(r => ({
+        windowId: r.windowId,
+        trainSharpe: r.trainMetrics.sharpeRatio,
+        testSharpe: r.testMetrics.sharpeRatio,
+        trainWinRate: r.trainMetrics.winRate,
+        testWinRate: r.testMetrics.winRate,
+        degradation: r.degradation
+      }))
+    });
+    
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// حساب مقاييس الأداء لصفقات موجودة
+app.post('/api/backtest/metrics', (req, res) => {
+  try {
+    const { trades, initialCapital = 1000 } = req.body;
+    
+    if (!Array.isArray(trades)) {
+      return res.status(400).json({
+        success: false,
+        error: 'trades must be an array'
+      });
+    }
+    
+    const calculator = new PerformanceMetrics();
+    const metrics = calculator.calculate(trades, Number(initialCapital));
+    
+    res.json({
+      success: true,
+      metrics
+    });
+    
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// ==========================================
+// 📊 DASHBOARD API ENDPOINTS
+// ==========================================
+
+// بيانات الـ Dashboard الكاملة
+app.get('/api/dashboard', (req, res) => {
+  try {
+    const data = dashboard.getDashboardData();
+    res.json({
+      success: true,
+      data
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// إحصائيات سريعة
+app.get('/api/dashboard/stats', (req, res) => {
+  try {
+    const data = dashboard.getDashboardData();
+    res.json({
+      success: true,
+      stats: data.stats
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// تاريخ الصفقات
+app.get('/api/dashboard/trades', (req, res) => {
+  try {
+    const data = dashboard.getDashboardData();
+    res.json({
+      success: true,
+      trades: data.recentTrades
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// منحنى الأسهم
+app.get('/api/dashboard/equity-curve', (req, res) => {
+  try {
+    const data = dashboard.getDashboardData();
+    res.json({
+      success: true,
+      equityCurve: data.equityCurve
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// PnL اليومي
+app.get('/api/dashboard/daily-pnl', (req, res) => {
+  try {
+    const data = dashboard.getDashboardData();
+    res.json({
+      success: true,
+      dailyPnl: data.dailyPnl
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// الإشارات المرفوضة
+app.get('/api/dashboard/rejected-signals', (req, res) => {
+  try {
+    const data = dashboard.getDashboardData();
+    res.json({
+      success: true,
+      rejectedSignals: data.rejectedSignals
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// تصدير الصفقات كـ CSV
+app.get('/api/dashboard/export/trades', (req, res) => {
+  try {
+    const csv = dashboard.exportTradesCSV();
+    
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename=trades-${Date.now()}.csv`);
+    res.send(csv);
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// ==========================================
+// 🚨 KILL SWITCH API ENDPOINTS
+// ==========================================
+app.post('/api/kill-switch/activate', (req, res) => {
+  const { reason = 'Manual activation via API', activatedBy = 'USER_API' } = req.body || {};
+  killSwitch.activate(reason, activatedBy);
+  res.json({
+    success: true,
+    message: '🚨 KILL SWITCH ACTIVATED',
+    state: killSwitch.getState()
+  });
+});
+
+app.post('/api/kill-switch/deactivate', (req, res) => {
+  killSwitch.deactivate();
+  res.json({
+    success: true,
+    message: '✅ Kill Switch deactivated - trading resumed',
+    state: killSwitch.getState()
+  });
+});
+
+app.get('/api/kill-switch/status', (req, res) => {
+  res.json({
+    success: true,
+    state: killSwitch.getState()
+  });
+});
+
+// ==========================================
+// 🔄 BROKER RECONCILIATION ENDPOINTS
+// ==========================================
+app.get('/api/reconciliation/status', (req, res) => {
+  res.json({
+    success: true,
+    lastReconciliation: brokerReconciliation.getLastReconciliation()
+  });
+});
+
+app.get('/api/reconciliation/history', (req, res) => {
+  const limit = parseInt(req.query.limit as string) || 10;
+  res.json({
+    success: true,
+    history: brokerReconciliation.getHistory(limit)
+  });
+});
+
+app.post('/api/reconciliation/run', async (req, res) => {
+  try {
+    const result = await brokerReconciliation.runReconciliation();
+    res.json({
+      success: true,
+      result
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// ==========================================
+// 🧪 STRESS TESTING ENDPOINTS
+// ==========================================
+app.post('/api/stress-test/run-all', async (req, res) => {
+  try {
+    const tester = new StressTester(`http://localhost:${PORT}`);
+    const results = await tester.runAllTests();
+    res.json({
+      success: true,
+      results,
+      summary: {
+        total: results.length,
+        passed: results.filter(r => r.status === 'PASSED').length,
+        failed: results.filter(r => r.status === 'FAILED').length
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+app.post('/api/stress-test/:testName', async (req, res) => {
+  try {
+    const { testName } = req.params;
+    const tester = new StressTester(`http://localhost:${PORT}`);
+    let result;
+    switch (testName) {
+      case 'network':
+        result = await tester.testNetworkFailure(req.body);
+        break;
+      case 'api':
+        result = await tester.testApiFailure(req.body);
+        break;
+      case 'corrupt-data':
+        result = await tester.testCorruptData();
+        break;
+      case 'concurrent':
+        result = await tester.testConcurrentRequests(req.body);
+        break;
+      default:
+        return res.status(400).json({
+          success: false,
+          error: `Unknown test name: ${testName}`
+        });
+    }
+    res.json({
+      success: true,
+      result
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// ==========================================
+// 🏆 CHAMPION / CHALLENGER ENDPOINTS
+// ==========================================
+app.post('/api/champion-challenger/compare', async (req, res) => {
+  try {
+    const { symbol = 'BTCUSDT', startTime, endTime } = req.body || {};
+    
+    if (!startTime || !endTime) {
+      return res.status(400).json({
+        success: false,
+        error: 'startTime and endTime are required'
+      });
+    }
+    
+    const candles = pointInTimeDb.getCandles({
+      symbol,
+      startTime: Number(startTime),
+      endTime: Number(endTime),
+      includeIncomplete: false
+    });
+    
+    if (candles.length < 30) {
+      return res.status(400).json({
+        success: false,
+        error: `Not enough data: ${candles.length} candles (need at least 30)`
+      });
+    }
+    
+    const result = await championChallenger.compare(candles);
+    res.json({
+      success: true,
+      result
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+app.get('/api/champion-challenger/history', (req, res) => {
+  const limit = parseInt(req.query.limit as string) || 10;
+  res.json({
+    success: true,
+    history: championChallenger.getComparisonHistory(limit)
+  });
+});
+
+app.get('/api/champion-challenger/config', (req, res) => {
+  res.json({
+    success: true,
+    champion: championChallenger.getChampionConfig(),
+    challenger: championChallenger.getChallengerConfig()
+  });
+});
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('\n🛑 Shutting down gracefully...');
+  dashboard.destroy();
+  brokerReconciliation.destroy();
+  await pointInTimeDb.destroy();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\n🛑 Shutting down gracefully...');
+  dashboard.destroy();
+  brokerReconciliation.destroy();
+  await pointInTimeDb.destroy();
+  process.exit(0);
 });
 
 async function startServer() {

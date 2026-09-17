@@ -13,3 +13,5 @@ export * from './binanceClient';
 export * from './precisionManager';
 export * from './hybridExit';
 export * from './userDataStream';
+export * from './OrderBookSimulator';
+export * from './PaperTradingEngine';

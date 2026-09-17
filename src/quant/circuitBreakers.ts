@@ -83,4 +83,12 @@ export class CircuitBreakersManager {
       consecutiveLosses: this.consecutiveLosses
     };
   }
+
+  public canTrade(): boolean {
+    return !this.isHalted;
+  }
+
+  public getHaltReason(): string {
+    return this.haltReason;
+  }
 }
