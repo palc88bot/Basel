@@ -14,3 +14,4 @@ export * from './smartPairSelector';
 export * from './circuitBreakers';
 export * from './stateDatabase';
 export * from './websocketManager';
+export * from './quantBackgroundWorker';

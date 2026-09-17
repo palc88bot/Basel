@@ -786,37 +786,42 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <span>دورة العودة للمتوسط</span>
                   <span className="text-[10px] text-indigo-400 font-mono">OU Half-Life</span>
                 </div>
-                {displayHalfLife > 0 ? (
-                  <>
-                    <span className="text-indigo-400 text-lg font-bold block">
-                      {Math.round(displayHalfLife)} ثانية
-                    </span>
-                    <span className={`text-[11px] block font-sans ${
-                      displayHalfLife <= 600 
-                        ? 'text-emerald-400' 
-                        : displayHalfLife <= 1800 
-                        ? 'text-amber-400' 
-                        : 'text-rose-400'
-                    }`}>
-                      {displayHalfLife <= 600 
-                        ? '🟢 ارتداد سريع ومستقر إحصائياً' 
-                        : displayHalfLife <= 1800 
-                        ? '🟡 ارتداد معتدل السرعة' 
-                        : '🔴 ارتداد بطيء خارج النطاق الآمن'}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-slate-300 text-lg font-bold block">
-                      {currentPair?.isCalibrated === false ? 'قيد المعايرة' : 'غير مستقر إحصائياً'}
-                    </span>
-                    <span className="text-[11px] text-amber-400 block font-sans">
-                      {currentPair?.isCalibrated === false
-                        ? '⏳ جاري تجميع عينات السبريد الحية'
-                        : '⚠️ مسار غير مستقر (لا ارتداد للمتوسط)'}
-                    </span>
-                  </>
-                )}
+                {(() => {
+                  let halfLifeText = "";
+                  let halfLifeColor = "text-slate-400";
+                  let subText = "";
+                  let subColor = "text-slate-400";
+
+                  if (!displayHalfLife || displayHalfLife === 0) {
+                    halfLifeText = "⚠️ فشل الحساب (بيانات غير كافية)";
+                    halfLifeColor = "text-rose-400 text-sm";
+                    subText = currentPair?.isCalibrated === false 
+                      ? "⏳ جاري تجميع عينات السبريد الحية" 
+                      : "⚠️ مسار غير مستقر أو غير متكامل إحصائياً";
+                    subColor = "text-rose-400";
+                  } else if (displayHalfLife >= 60 && displayHalfLife <= 1800) {
+                    halfLifeText = `${Math.round(displayHalfLife)} ثانية (ارتداد مستقر)`;
+                    halfLifeColor = "text-emerald-400 text-base";
+                    subText = displayHalfLife <= 600 ? "🟢 ارتداد سريع ومستقر إحصائياً" : "🟡 ارتداد معتدل السرعة";
+                    subColor = displayHalfLife <= 600 ? "text-emerald-400" : "text-amber-400";
+                  } else {
+                    halfLifeText = `${Math.round(displayHalfLife)} ثانية (خارج النطاق الآمن)`;
+                    halfLifeColor = "text-amber-400 text-base";
+                    subText = "🔴 خارج النطاق المؤسسي الآمن (60s - 1800s)";
+                    subColor = "text-rose-400";
+                  }
+
+                  return (
+                    <>
+                      <span className={`${halfLifeColor} font-bold block`}>
+                        {halfLifeText}
+                      </span>
+                      <span className={`text-[11px] block font-sans ${subColor}`}>
+                        {subText}
+                      </span>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           );

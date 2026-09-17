@@ -79,6 +79,9 @@ export interface FuturesPair {
   zScore: number;
   halfLifeSec: number;
   isCalibrated?: boolean;
+  isHalfLifeValid?: boolean;
+  beta?: number;
+  spread?: number;
   signal: 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL';
   signalReasonAr: string;
   activeTentacle: 'تحكيم إحصائي' | 'شبكة ديناميكية' | 'DCA تراكمي' | 'مراقبة سيولة';
@@ -86,6 +89,8 @@ export interface FuturesPair {
   recommendedLeverage: number;
   liquidityRank: number;
   statusGroup?: 'READY' | 'PREPARED' | 'BACKGROUND';
+  isSafeTradeable?: boolean;
+  filterReason?: string;
 }
 
 export interface CapitalAdaptationProfile {

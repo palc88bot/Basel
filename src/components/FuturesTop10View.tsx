@@ -453,9 +453,27 @@ export const FuturesTop10View: React.FC<FuturesTop10ViewProps> = ({ onSelectPair
                   </div>
                   <div>
                     <span className="text-[10px] text-slate-400 block">فترة الارتداد</span>
-                    <span className="text-indigo-300 font-bold">
-                      {pair.halfLifeSec > 0 ? `${pair.halfLifeSec}s` : (pair.isCalibrated === false ? 'معايرة' : 'غير مستقر')}
-                    </span>
+                    {(() => {
+                      let halfLifeText = "";
+                      let halfLifeColor = "text-slate-400";
+
+                      if (!pair.halfLifeSec || pair.halfLifeSec === 0) {
+                        halfLifeText = pair.isCalibrated === false ? "⏳ معايرة" : "⚠️ غير صالح";
+                        halfLifeColor = "text-rose-400 font-bold";
+                      } else if (pair.halfLifeSec >= 60 && pair.halfLifeSec <= 1800) {
+                        halfLifeText = `${Math.round(pair.halfLifeSec)}s (مستقر)`;
+                        halfLifeColor = "text-emerald-400 font-bold";
+                      } else {
+                        halfLifeText = `${Math.round(pair.halfLifeSec)}s (خارج النطاق)`;
+                        halfLifeColor = "text-amber-400 font-bold";
+                      }
+
+                      return (
+                        <span className={`text-xs ${halfLifeColor} block truncate`}>
+                          {halfLifeText}
+                        </span>
+                      );
+                    })()}
                   </div>
                   <div>
                     <span className="text-[10px] text-slate-400 block">السبريد اللحظي</span>

@@ -54,7 +54,7 @@ export class SmartPairSelector {
     return this.allowedCoins.has(symbol);
   }
 
-  public calculateHalfLife(spreadSeries: number[]): number {
+  public calculateHalfLife(spreadSeries: number[], sampleIntervalSec: number = 5): number {
     if (!Array.isArray(spreadSeries) || spreadSeries.length < 10) return 0;
 
     // Simple OLS AR(1) estimation
@@ -76,10 +76,11 @@ export class SmartPairSelector {
     const lambda = (n * sumXY - sumX * sumY) / denominator;
     if (lambda >= 0) return 0; // Non-stationary (no mean-reversion drift)
 
-    const halfLife = -Math.log(2) / lambda;
-    if (isNaN(halfLife) || !isFinite(halfLife) || halfLife <= 0) return 0;
+    const periods = -Math.log(2) / lambda;
+    if (isNaN(periods) || !isFinite(periods) || periods <= 0) return 0;
     
-    return Math.round(halfLife);
+    const halfLifeSec = periods * sampleIntervalSec;
+    return Math.round(halfLifeSec);
   }
 
   public calculateScore(

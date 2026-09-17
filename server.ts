@@ -23,7 +23,8 @@ import {
   KalmanHedgeRatio,
   SmartPairSelector,
   CircuitBreakersManager,
-  StateDatabase
+  StateDatabase,
+  QuantBackgroundWorker
 } from "./src/quant/index";
 
 const app = express();
@@ -58,52 +59,6 @@ const circuitBreakers = new CircuitBreakersManager(1000.0, {
 });
 
 const kalmanFiltersMap = new Map<string, KalmanHedgeRatio>();
-
-// Multi-Coin Dynamic Kalman & Spread Tracking Engine with Sanity Checks
-function getDynamicKalmanMetrics(
-  symbol: string,
-  price: number,
-  btcPrice: number,
-  change24h: number
-): { zScore: number; halfLifeSec: number; beta: number; spread: number; isCalibrated: boolean } {
-  const benchmarkPrice = btcPrice > 0 ? btcPrice : 68000;
-  const currentPrice = price > 0 ? price : 1.0;
-
-  let kf = kalmanFiltersMap.get(symbol);
-  if (!kf) {
-    kf = new KalmanHedgeRatio({ delta: 0.0001, ve: 0.001, vw: 0.001 });
-    // Initialize prior state with true price ratio instead of artificial synthetic oscillations
-    kf.beta = currentPrice / benchmarkPrice;
-    kalmanFiltersMap.set(symbol, kf);
-  }
-
-  // Update live Kalman state with current market tick
-  const { beta, spread } = kf.update(currentPrice, benchmarkPrice);
-  
-  // Calculate live Z-score from rolling Kalman innovation spread
-  const spreadHistory = kf.getHistory().spread;
-  const isCalibrated = spreadHistory.length >= 10;
-  
-  let zScore = isCalibrated ? kf.getZScore(30) : 0.0;
-
-  // Apply Sanity Checks: Ensure not NaN or Inf, bounded to standard normal distribution
-  if (isNaN(zScore) || !isFinite(zScore)) {
-    zScore = 0.0;
-  }
-
-  // Bound to physical statistical range [-4.0, +4.0]
-  zScore = parseFloat(Math.max(-4.0, Math.min(4.0, zScore)).toFixed(2));
-
-  // Calculate dynamic Ornstein-Uhlenbeck half-life from spread history
-  let halfLifeSec = smartPairSelector.calculateHalfLife(spreadHistory);
-  if (!SanityChecks.isValidNumber(halfLifeSec) || !SanityChecks.validateHalfLife(halfLifeSec)) {
-    // If real statistical half-life calculation fails or is non-stationary, do NOT inject a synthetic guess.
-    // Setting to 0 ensures SanityChecks.validateHalfLife safely rejects entry.
-    halfLifeSec = 0;
-  }
-
-  return { zScore, halfLifeSec, beta: parseFloat(beta.toFixed(4)), spread: parseFloat(spread.toFixed(4)), isCalibrated };
-}
 
 const zAlertSystem = new ExtremeZAlertSystem({
   rapidChangeZThreshold: 2.0,
@@ -170,10 +125,22 @@ const userDataStream = new UserDataStreamListener(
   hybridExit,
   process.env.BINANCE_TESTNET !== 'false'
 );
-userDataStream.start();
+// userDataStream.start(); // سيتم تفعيله عند توفر المفاتيح
 
-// In-memory alert logs - clean start upon server boot to eliminate ghost logs
+// ==========================================
+// 🛡️ FIX 1: مسح السجلات الشبحية عند بدء التشغيل
+// ==========================================
 let alertLogs: any[] = [];
+
+// ==========================================
+// 🛡️ FIX 2: القائمة السوداء الصارمة (Blacklist)
+// ==========================================
+const BLACKLISTED_COINS = new Set([
+  "PLAYUSDT", "HEIUSDT", "AKEUSDT", "POWERUSDT", "LSKUSDT",
+  "USDCUSDT", "BUSDUSDT", "DAIUSDT", "TUSDUSDT", "USDPUSDT",
+  "FRAXUSDT", "FDUSDUSDT", "AEURUSDT", "EURUSDT"
+]);
+const INSTITUTIONAL_BLACKLIST = BLACKLISTED_COINS;
 
 // Top 20 High-Liquidity Futures Pairs Master List
 const TOP_20_FUTURES = [
@@ -453,243 +420,70 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", engine: "OMEGA QuantBrain Unified v5.5", timestamp: Date.now() });
 });
 
-// Full Exchange Futures Scanner Endpoint (Scans All Pairs, Filters Ready/Prepared, Watches Background)
+// Helper function to fetch real live tickers from the active exchange
+async function fetchRealMarketTickers(): Promise<{ liveTickers: Map<string, any>; exchangeName: string }> {
+  const activeEx = serverVault.getSecret('ACTIVE_EXCHANGE') || 'BINANCE';
+  let liveTickers = new Map<string, any>();
+  let exchangeName = 'Binance Futures';
+
+  if (activeEx === 'BYBIT' || executor.getBybitClient().hasCredentials()) {
+    liveTickers = await executor.getBybitClient().fetchRealLinearTickers();
+    exchangeName = 'Bybit V5 Futures';
+  } else {
+    liveTickers = await executor.getBinanceClient().fetchRealLinearTickers();
+    exchangeName = executor.getBinanceClient().isTestnet() ? 'Binance Futures (Testnet)' : 'Binance Futures (Live)';
+  }
+
+  // If primary exchange returns no tickers, attempt fallback
+  if (liveTickers.size === 0) {
+    if (exchangeName.includes('Bybit')) {
+      liveTickers = await executor.getBinanceClient().fetchRealLinearTickers();
+      if (liveTickers.size > 0) exchangeName = 'Binance Futures (Testnet)';
+    } else {
+      liveTickers = await executor.getBybitClient().fetchRealLinearTickers();
+      if (liveTickers.size > 0) exchangeName = 'Bybit V5 Futures';
+    }
+  }
+
+  return { liveTickers, exchangeName };
+}
+
+// Unified Background Worker Pipeline: runs non-blocking continuous quant & Kalman calibration in the background
+const quantBackgroundWorker = new QuantBackgroundWorker(
+  {
+    fetchTickers: fetchRealMarketTickers,
+    getActiveOrders: () => new Set(orderTracker.getActiveOrders().map((o: any) => o.tradingPair)),
+    safeCoinFilter,
+    smartPairSelector,
+    kalmanFiltersMap,
+    zAlertSystem,
+    blacklist: BLACKLISTED_COINS,
+    arabicNames: ARABIC_COIN_NAMES
+  },
+  {
+    intervalMs: 8000 // continuous 8-second tick cycle
+  }
+);
+
+// Full Exchange Futures Scanner Endpoint (Powered by Non-Blocking Background Worker)
 app.get("/api/quant/futures-pairs", async (req, res) => {
   const now = Date.now();
   const elapsed = now - lastScanTimestamp;
   const remainingMs = Math.max(0, THIRTY_MINUTES_MS - (elapsed % THIRTY_MINUTES_MS));
 
   try {
-    const activeEx = serverVault.getSecret('ACTIVE_EXCHANGE') || 'BINANCE';
-    let liveTickers = new Map<string, any>();
-    let exchangeName = 'Binance Futures';
-
-    if (activeEx === 'BYBIT' || executor.getBybitClient().hasCredentials()) {
-      liveTickers = await executor.getBybitClient().fetchRealLinearTickers();
-      exchangeName = 'Bybit V5 Futures';
-    } else {
-      liveTickers = await executor.getBinanceClient().fetchRealLinearTickers();
-      exchangeName = executor.getBinanceClient().isTestnet() ? 'Binance Futures (Testnet)' : 'Binance Futures (Live)';
+    let snapshot = quantBackgroundWorker.getSnapshot();
+    if (!snapshot) {
+      snapshot = await quantBackgroundWorker.runScanCycle();
     }
-
-    // If live tickers map is empty, attempt the other exchange
-    if (liveTickers.size === 0) {
-      if (exchangeName.includes('Bybit')) {
-        liveTickers = await executor.getBinanceClient().fetchRealLinearTickers();
-        if (liveTickers.size > 0) exchangeName = 'Binance Futures (Testnet)';
-      } else {
-        liveTickers = await executor.getBybitClient().fetchRealLinearTickers();
-        if (liveTickers.size > 0) exchangeName = 'Bybit V5 Futures';
-      }
-    }
-
-    let rawList: Array<{
-      symbol: string;
-      nameAr: string;
-      price: number;
-      change24h: number;
-      volume24hUsd: number;
-      fundingRate: number;
-      spreadPct: number;
-      minNotionalUsd: number;
-      recommendedLeverage: number;
-    }> = [];
-
-    if (liveTickers.size > 0) {
-      liveTickers.forEach((t, sym) => {
-        if (!sym.endsWith('USDT')) return;
-        const baseCoin = sym.replace('USDT', '');
-        const nameAr = ARABIC_COIN_NAMES[sym] || `${baseCoin} (USDT)`;
-
-        const rawPrice = t.lastPrice || 0;
-        // Tickers from both Binance and Bybit are already normalized to standard percentage (e.g. +0.74% or -1.82%)
-        const change24h = typeof t.price24hPcnt === 'number' && !isNaN(t.price24hPcnt) && isFinite(t.price24hPcnt)
-          ? parseFloat(t.price24hPcnt.toFixed(2))
-          : 0;
-
-        const rawVol = t.turnover24h || (t.volume24h && rawPrice ? t.volume24h * rawPrice : 0) || 0;
-        const volume24hUsd = typeof rawVol === 'number' && !isNaN(rawVol) && isFinite(rawVol) ? rawVol : 0;
-
-        const spreadPct = (t.spreadPct && t.spreadPct > 0 && t.spreadPct < 0.05) ? t.spreadPct : 0.00015;
-
-        rawList.push({
-          symbol: sym,
-          nameAr,
-          price: rawPrice,
-          change24h,
-          volume24hUsd,
-          fundingRate: t.fundingRate || 0.0001,
-          spreadPct,
-          minNotionalUsd: 5.0,
-          recommendedLeverage: 3
-        });
-      });
-    }
-
-    // Track whether data is live from exchange or offline fallback
-    const isLiveMarket = rawList.length > 0;
-
-    // Fallback list if network issue or offline mode
-    if (!isLiveMarket) {
-      rawList = TOP_20_FUTURES.map(p => ({
-        symbol: p.symbol,
-        nameAr: p.nameAr,
-        price: p.basePrice,
-        change24h: 0,
-        volume24hUsd: p.volume24hUsd,
-        fundingRate: p.fundingRate,
-        spreadPct: p.spreadPct,
-        minNotionalUsd: p.minNotionalUsd,
-        recommendedLeverage: p.recommendedLeverage
-      }));
-    }
-
-    // Find benchmark price for dynamic Kalman hedge evaluation
-    const btcItem = rawList.find(i => i.symbol === 'BTCUSDT');
-    const btcPrice = btcItem && btcItem.price > 0 ? btcItem.price : 68000;
-
-    // Register metrics in SafeCoinFilter & Rank Coins with dynamic Kalman Z-Scores
-    rawList.forEach((item) => {
-      const { zScore } = getDynamicKalmanMetrics(item.symbol, item.price, btcPrice, item.change24h);
-      safeCoinFilter.updateMetrics(
-        item.symbol,
-        item.price,
-        item.volume24hUsd,
-        item.spreadPct,
-        Math.abs(item.change24h) / 100,
-        zScore
-      );
-    });
-    safeCoinFilter.calculateRanks();
-
-    // Active orders check to determine if position is open
-    const activeOrdersMap = new Set(orderTracker.getActiveOrders().map((o: any) => o.tradingPair));
-
-    // Evaluate quantitative entry criteria for ALL scanned coins dynamically
-    const allPairs = rawList.map((item) => {
-      const { zScore, halfLifeSec, beta, spread, isCalibrated } = getDynamicKalmanMetrics(
-        item.symbol,
-        item.price,
-        btcPrice,
-        item.change24h
-      );
-      const absZ = Math.abs(zScore);
-
-      // Check SafeCoinFilter
-      const filterCheck = safeCoinFilter.isTradeable(item.symbol, undefined, zScore);
-
-      // Trigger Extreme Z-Score Alert Check
-      const isPosOpen = activeOrdersMap.has(item.symbol);
-      zAlertSystem.check(item.symbol, zScore, isPosOpen, {
-        volume24hUsd: item.volume24hUsd,
-        spreadPct: item.spreadPct
-      });
-
-      let signal: 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL' = 'NEUTRAL';
-      let statusGroup: 'READY' | 'PREPARED' | 'BACKGROUND' = 'BACKGROUND';
-      let signalReasonAr = '';
-      let activeTentacle: 'تحكيم إحصائي' | 'شبكة ديناميكية' | 'DCA تراكمي' | 'مراقبة سيولة' = 'مراقبة سيولة';
-
-      // Apply SanityChecks suite to each candidate
-      const isZValid = SanityChecks.validateZScore(zScore);
-      const isHlValid = SanityChecks.validateHalfLife(halfLifeSec);
-
-      // FAIL-SAFE CIRCUIT BREAKERS:
-      if (!isLiveMarket) {
-        // Strict Fail-Safe: NEVER issue actionable signals on offline/fallback data
-        statusGroup = 'BACKGROUND';
-        signal = 'NEUTRAL';
-        signalReasonAr = `⚠️ انقطاع اتصال السوق - تم حظر الإشارات والتنفيذ التلقائي لحماية رأس المال.`;
-      } else if (!isCalibrated) {
-        // Calibration warm-up protection: Require real ticks before generating entries
-        statusGroup = 'BACKGROUND';
-        signal = 'NEUTRAL';
-        signalReasonAr = `⏳ فلتر كالمان قيد المعايرة (تجميع بيانات حية للمصفوفة)...`;
-      } else if (!filterCheck.isTradeable) {
-        statusGroup = 'BACKGROUND';
-        signalReasonAr = `⚠️ مستبعد بفلتر الأمان: ${filterCheck.reason}`;
-      } else if (!isZValid) {
-        statusGroup = 'BACKGROUND';
-        signalReasonAr = `🚨 قاطع الدائرة الإحصائي: مؤشر Z-Score غير صالح أو مفرط (${zScore})`;
-      } else if (!isHlValid) {
-        statusGroup = 'BACKGROUND';
-        signalReasonAr = `⛔ نصف العمر خارج النطاق الآمن (${halfLifeSec} ثانية)`;
-      } else if (zScore <= -1.8) {
-        signal = zScore <= -2.2 ? 'STRONG_BUY' : 'BUY';
-        statusGroup = 'READY';
-        signalReasonAr = `انحراف سعري سالب حقيقي (Z=${zScore}) مع سرعة عودة ${halfLifeSec} ثانية - فرصة شراء إحصائي مؤكدة.`;
-        activeTentacle = 'تحكيم إحصائي';
-      } else if (zScore >= 1.8) {
-        signal = zScore >= 2.2 ? 'STRONG_SELL' : 'SELL';
-        statusGroup = 'READY';
-        signalReasonAr = `تشبع سعري موجب حقيقي (Z=+${zScore}) مع سرعة عودة ${halfLifeSec} ثانية - فرصة تصحيح بيعي مؤكدة.`;
-        activeTentacle = 'تحكيم إحصائي';
-      } else if (absZ >= 0.8) {
-        statusGroup = 'PREPARED';
-        activeTentacle = 'شبكة ديناميكية';
-        signalReasonAr = `تذبذب نشط واقتراب الانحراف (Z=${zScore}) - العملة تحت المراقبة الحثيثة ومُهيأة للدخول فور وصول العتبة.`;
-      } else {
-        statusGroup = 'BACKGROUND';
-        activeTentacle = 'مراقبة سيولة';
-        signalReasonAr = `استقرار وتوازن إحصائي (Z=${zScore}) - العملة في منطقة التجميع الطبيعية تحت الملاحظة بالخلفية.`;
-      }
-
-      return {
-        symbol: item.symbol,
-        nameAr: item.nameAr,
-        price: item.price,
-        change24h: item.change24h,
-        volume24hUsd: item.volume24hUsd,
-        fundingRate: item.fundingRate,
-        spreadPct: item.spreadPct,
-        zScore,
-        halfLifeSec,
-        isCalibrated,
-        beta,
-        spread,
-        signal,
-        signalReasonAr,
-        activeTentacle,
-        minNotionalUsd: item.minNotionalUsd,
-        recommendedLeverage: item.recommendedLeverage,
-        liquidityRank: 0,
-        statusGroup,
-        isSafeTradeable: filterCheck.isTradeable,
-        filterReason: filterCheck.reason
-      };
-    });
-
-    // Sort: READY first, then PREPARED, then BACKGROUND. Within group sort by volume
-    allPairs.sort((a, b) => {
-      const groupRank = { READY: 1, PREPARED: 2, BACKGROUND: 3 };
-      if (groupRank[a.statusGroup] !== groupRank[b.statusGroup]) {
-        return groupRank[a.statusGroup] - groupRank[b.statusGroup];
-      }
-      return b.volume24hUsd - a.volume24hUsd;
-    });
-
-    // Update liquidity rank after sort
-    allPairs.forEach((p, idx) => { p.liquidityRank = idx + 1; });
-
-    const readyCount = allPairs.filter(p => p.statusGroup === 'READY').length;
-    const preparedCount = allPairs.filter(p => p.statusGroup === 'PREPARED').length;
-    const backgroundCount = allPairs.filter(p => p.statusGroup === 'BACKGROUND').length;
 
     res.json({
-      success: true,
-      isLive: isLiveMarket,
-      exchangeName,
-      totalScannedCoins: allPairs.length,
-      readyCount,
-      preparedCount,
-      backgroundCount,
-      pairs: allPairs,
-      nextScanRemainingSeconds: Math.floor(remainingMs / 1000),
-      lastScanTime: new Date(now - (elapsed % THIRTY_MINUTES_MS)).toLocaleTimeString('ar-SA')
+      ...snapshot,
+      nextScanRemainingSeconds: Math.floor(remainingMs / 1000)
     });
   } catch (err: any) {
     console.error("Futures pairs scanner error:", err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err.message, pairs: [] });
   }
 });
 
@@ -836,7 +630,8 @@ app.all("/api/quant/live-market", async (req, res) => {
         const curB = alignedB[i].close;
         const spread = spreads[i];
         const zScore = parseFloat(((spread - meanSpread) / stdSpread).toFixed(3));
-        const halfLife = Math.floor(280 + Math.abs(zScore) * 60);
+        const calculatedHl = smartPairSelector.calculateHalfLife(spreads.slice(0, i + 1));
+        const halfLife = SanityChecks.validateHalfLife(calculatedHl) ? calculatedHl : 0;
 
         // Gaussian Mean-Reversion Probability Density Projection (Heuristic estimator derived from normal CDF of Z-Score)
         const statReversionUp = parseFloat(Math.max(0.05, Math.min(0.85, 0.5 - zScore * 0.15)).toFixed(3));
@@ -881,7 +676,7 @@ app.all("/api/quant/live-market", async (req, res) => {
         beta,
         spread,
         zScore: 0.0,
-        halfLife: 300,
+        halfLife: 0,
         lstmUp: 0.33,
         lstmNeutral: 0.34,
         lstmDown: 0.33,
@@ -2236,6 +2031,13 @@ async function startServer() {
     console.log(`[StateDatabase] Restored ${existingPositions.length} active positions on startup.`);
   } catch (e) {
     // Non-blocking
+  }
+
+  // 🚀 Start Unified Non-Blocking Quantitative Background Worker Pipeline
+  try {
+    quantBackgroundWorker.start();
+  } catch (e: any) {
+    console.warn('[QuantWorker] Failed to start worker loop:', e.message);
   }
 
   if (process.env.NODE_ENV !== "production") {

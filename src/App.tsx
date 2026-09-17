@@ -309,7 +309,9 @@ export default function App() {
             const symbol = p.symbol;
             const currentPrice = Number(p.price) || 0;
             const volumeUsd = Number(p.volume24hUsd || p.volume24h) || 0;
-            const halfLife = Number(p.halfLifeSec || p.halfLife) || 180;
+            const halfLife = typeof p.halfLifeSec === 'number' && !isNaN(p.halfLifeSec)
+              ? p.halfLifeSec
+              : (typeof p.halfLife === 'number' && !isNaN(p.halfLife) ? p.halfLife : 0);
             const spreadPct = Number(p.spreadPct) || 0.0005;
 
             // 1. Data Integrity: Strict numeric validity checks
