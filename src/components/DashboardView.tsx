@@ -730,7 +730,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           const displayPrice = currentPair ? (currentPair.price ?? 0) : (latestTick ? latestTick.priceA : 0);
           const displayChange = currentPair?.change24h ?? currentPair?.priceChange24h ?? 0;
           const displayZ = currentPair ? (currentPair.zScore ?? 0) : (latestTick ? latestTick.zScore : 0);
-          const displayHalfLife = currentPair ? (currentPair.halfLifeSec ?? currentPair.halfLife ?? 180) : (latestTick ? latestTick.halfLife : 180);
+          const displayHalfLife = currentPair ? (currentPair.halfLifeSec ?? currentPair.halfLife ?? 0) : (latestTick ? latestTick.halfLife : 0);
           
           const rawVol = currentPair?.volume24hUsd ?? currentPair?.volume24h ?? (latestTick ? latestTick.volume24hUsd : 0) ?? 50_000_000;
           let formattedVolume = '$50.0M';
@@ -786,8 +786,37 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <span>دورة العودة للمتوسط</span>
                   <span className="text-[10px] text-indigo-400 font-mono">OU Half-Life</span>
                 </div>
-                <span className="text-indigo-400 text-lg font-bold block">{displayHalfLife} ثانية</span>
-                <span className="text-[11px] text-emerald-400 block font-sans">ارتداد سريع ومستقر إحصائياً</span>
+                {displayHalfLife > 0 ? (
+                  <>
+                    <span className="text-indigo-400 text-lg font-bold block">
+                      {Math.round(displayHalfLife)} ثانية
+                    </span>
+                    <span className={`text-[11px] block font-sans ${
+                      displayHalfLife <= 600 
+                        ? 'text-emerald-400' 
+                        : displayHalfLife <= 1800 
+                        ? 'text-amber-400' 
+                        : 'text-rose-400'
+                    }`}>
+                      {displayHalfLife <= 600 
+                        ? '🟢 ارتداد سريع ومستقر إحصائياً' 
+                        : displayHalfLife <= 1800 
+                        ? '🟡 ارتداد معتدل السرعة' 
+                        : '🔴 ارتداد بطيء خارج النطاق الآمن'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-slate-300 text-lg font-bold block">
+                      {currentPair?.isCalibrated === false ? 'قيد المعايرة' : 'غير مستقر إحصائياً'}
+                    </span>
+                    <span className="text-[11px] text-amber-400 block font-sans">
+                      {currentPair?.isCalibrated === false
+                        ? '⏳ جاري تجميع عينات السبريد الحية'
+                        : '⚠️ مسار غير مستقر (لا ارتداد للمتوسط)'}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
           );

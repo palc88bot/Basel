@@ -78,6 +78,7 @@ export interface FuturesPair {
   spreadPct: number; // e.g. 0.015%
   zScore: number;
   halfLifeSec: number;
+  isCalibrated?: boolean;
   signal: 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL';
   signalReasonAr: string;
   activeTentacle: 'تحكيم إحصائي' | 'شبكة ديناميكية' | 'DCA تراكمي' | 'مراقبة سيولة';

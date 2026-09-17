@@ -453,7 +453,9 @@ export const FuturesTop10View: React.FC<FuturesTop10ViewProps> = ({ onSelectPair
                   </div>
                   <div>
                     <span className="text-[10px] text-slate-400 block">فترة الارتداد</span>
-                    <span className="text-indigo-300 font-bold">{pair.halfLifeSec}s</span>
+                    <span className="text-indigo-300 font-bold">
+                      {pair.halfLifeSec > 0 ? `${pair.halfLifeSec}s` : (pair.isCalibrated === false ? 'معايرة' : 'غير مستقر')}
+                    </span>
                   </div>
                   <div>
                     <span className="text-[10px] text-slate-400 block">السبريد اللحظي</span>

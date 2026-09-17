@@ -96,8 +96,10 @@ function getDynamicKalmanMetrics(
 
   // Calculate dynamic Ornstein-Uhlenbeck half-life from spread history
   let halfLifeSec = smartPairSelector.calculateHalfLife(spreadHistory);
-  if (isNaN(halfLifeSec) || halfLifeSec < 60 || halfLifeSec > 1800) {
-    halfLifeSec = Math.floor(180 + Math.abs(zScore) * 50);
+  if (!SanityChecks.isValidNumber(halfLifeSec) || !SanityChecks.validateHalfLife(halfLifeSec)) {
+    // If real statistical half-life calculation fails or is non-stationary, do NOT inject a synthetic guess.
+    // Setting to 0 ensures SanityChecks.validateHalfLife safely rejects entry.
+    halfLifeSec = 0;
   }
 
   return { zScore, halfLifeSec, beta: parseFloat(beta.toFixed(4)), spread: parseFloat(spread.toFixed(4)), isCalibrated };
@@ -170,25 +172,8 @@ const userDataStream = new UserDataStreamListener(
 );
 userDataStream.start();
 
-// In-memory alert logs
-let alertLogs = [
-  {
-    id: "ALT-101",
-    timestamp: new Date(Date.now() - 1000 * 60 * 15).toLocaleTimeString('ar-SA'),
-    level: "INFO",
-    title: "تزامن عقل البوت",
-    message: "تم تحديث مصفوفة السيولة لأكبر 10 عملات فيوتشرز وربط المحرك التكيفي لرأس المال.",
-    channel: "SYSTEM"
-  },
-  {
-    id: "ALT-102",
-    timestamp: new Date(Date.now() - 1000 * 60 * 6).toLocaleTimeString('ar-SA'),
-    level: "INFO",
-    title: "تحوط كالمان المتغير",
-    message: "تم احتساب معامل بيتا اللحظي بنجاح مع تأكيد عودة السعر للمتوسط.",
-    channel: "TELEGRAM"
-  }
-];
+// In-memory alert logs - clean start upon server boot to eliminate ghost logs
+let alertLogs: any[] = [];
 
 // Top 20 High-Liquidity Futures Pairs Master List
 const TOP_20_FUTURES = [
@@ -659,6 +644,7 @@ app.get("/api/quant/futures-pairs", async (req, res) => {
         spreadPct: item.spreadPct,
         zScore,
         halfLifeSec,
+        isCalibrated,
         beta,
         spread,
         signal,
