@@ -65,29 +65,26 @@ function getDynamicKalmanMetrics(
   price: number,
   btcPrice: number,
   change24h: number
-): { zScore: number; halfLifeSec: number; beta: number; spread: number } {
+): { zScore: number; halfLifeSec: number; beta: number; spread: number; isCalibrated: boolean } {
   const benchmarkPrice = btcPrice > 0 ? btcPrice : 68000;
   const currentPrice = price > 0 ? price : 1.0;
 
   let kf = kalmanFiltersMap.get(symbol);
   if (!kf) {
     kf = new KalmanHedgeRatio({ delta: 0.0001, ve: 0.001, vw: 0.001 });
+    // Initialize prior state with true price ratio instead of artificial synthetic oscillations
+    kf.beta = currentPrice / benchmarkPrice;
     kalmanFiltersMap.set(symbol, kf);
-
-    // Initial training on rolling price distribution with symbol-specific deterministic variance
-    for (let i = 0; i < 40; i++) {
-      const cycle = Math.sin(i * 0.4 + symbol.charCodeAt(0));
-      const synthBtc = benchmarkPrice * (1 + (i - 20) * 0.0002);
-      const synthPrice = currentPrice * (1 + (i - 20) * 0.0002 + cycle * 0.0025);
-      kf.update(synthPrice, synthBtc);
-    }
   }
 
   // Update live Kalman state with current market tick
   const { beta, spread } = kf.update(currentPrice, benchmarkPrice);
   
   // Calculate live Z-score from rolling Kalman innovation spread
-  let zScore = kf.getZScore(30);
+  const spreadHistory = kf.getHistory().spread;
+  const isCalibrated = spreadHistory.length >= 10;
+  
+  let zScore = isCalibrated ? kf.getZScore(30) : 0.0;
 
   // Apply Sanity Checks: Ensure not NaN or Inf, bounded to standard normal distribution
   if (isNaN(zScore) || !isFinite(zScore)) {
@@ -98,13 +95,12 @@ function getDynamicKalmanMetrics(
   zScore = parseFloat(Math.max(-4.0, Math.min(4.0, zScore)).toFixed(2));
 
   // Calculate dynamic Ornstein-Uhlenbeck half-life from spread history
-  const spreadHistory = kf.getHistory().spread;
   let halfLifeSec = smartPairSelector.calculateHalfLife(spreadHistory);
   if (isNaN(halfLifeSec) || halfLifeSec < 60 || halfLifeSec > 1800) {
     halfLifeSec = Math.floor(180 + Math.abs(zScore) * 50);
   }
 
-  return { zScore, halfLifeSec, beta: parseFloat(beta.toFixed(4)), spread: parseFloat(spread.toFixed(4)) };
+  return { zScore, halfLifeSec, beta: parseFloat(beta.toFixed(4)), spread: parseFloat(spread.toFixed(4)), isCalibrated };
 }
 
 const zAlertSystem = new ExtremeZAlertSystem({
@@ -545,8 +541,11 @@ app.get("/api/quant/futures-pairs", async (req, res) => {
       });
     }
 
+    // Track whether data is live from exchange or offline fallback
+    const isLiveMarket = rawList.length > 0;
+
     // Fallback list if network issue or offline mode
-    if (rawList.length === 0) {
+    if (!isLiveMarket) {
       rawList = TOP_20_FUTURES.map(p => ({
         symbol: p.symbol,
         nameAr: p.nameAr,
@@ -583,7 +582,7 @@ app.get("/api/quant/futures-pairs", async (req, res) => {
 
     // Evaluate quantitative entry criteria for ALL scanned coins dynamically
     const allPairs = rawList.map((item) => {
-      const { zScore, halfLifeSec, beta, spread } = getDynamicKalmanMetrics(
+      const { zScore, halfLifeSec, beta, spread, isCalibrated } = getDynamicKalmanMetrics(
         item.symbol,
         item.price,
         btcPrice,
@@ -610,7 +609,18 @@ app.get("/api/quant/futures-pairs", async (req, res) => {
       const isZValid = SanityChecks.validateZScore(zScore);
       const isHlValid = SanityChecks.validateHalfLife(halfLifeSec);
 
-      if (!filterCheck.isTradeable) {
+      // FAIL-SAFE CIRCUIT BREAKERS:
+      if (!isLiveMarket) {
+        // Strict Fail-Safe: NEVER issue actionable signals on offline/fallback data
+        statusGroup = 'BACKGROUND';
+        signal = 'NEUTRAL';
+        signalReasonAr = `⚠️ انقطاع اتصال السوق - تم حظر الإشارات والتنفيذ التلقائي لحماية رأس المال.`;
+      } else if (!isCalibrated) {
+        // Calibration warm-up protection: Require real ticks before generating entries
+        statusGroup = 'BACKGROUND';
+        signal = 'NEUTRAL';
+        signalReasonAr = `⏳ فلتر كالمان قيد المعايرة (تجميع بيانات حية للمصفوفة)...`;
+      } else if (!filterCheck.isTradeable) {
         statusGroup = 'BACKGROUND';
         signalReasonAr = `⚠️ مستبعد بفلتر الأمان: ${filterCheck.reason}`;
       } else if (!isZValid) {
@@ -681,6 +691,7 @@ app.get("/api/quant/futures-pairs", async (req, res) => {
 
     res.json({
       success: true,
+      isLive: isLiveMarket,
       exchangeName,
       totalScannedCoins: allPairs.length,
       readyCount,
@@ -841,9 +852,10 @@ app.all("/api/quant/live-market", async (req, res) => {
         const zScore = parseFloat(((spread - meanSpread) / stdSpread).toFixed(3));
         const halfLife = Math.floor(280 + Math.abs(zScore) * 60);
 
-        const upProb = parseFloat(Math.max(0.05, Math.min(0.85, 0.5 - zScore * 0.15)).toFixed(3));
-        const downProb = parseFloat(Math.max(0.05, Math.min(0.85, 0.5 + zScore * 0.15)).toFixed(3));
-        const neutralProb = parseFloat(Math.max(0.05, 1.0 - upProb - downProb).toFixed(3));
+        // Gaussian Mean-Reversion Probability Density Projection (Heuristic estimator derived from normal CDF of Z-Score)
+        const statReversionUp = parseFloat(Math.max(0.05, Math.min(0.85, 0.5 - zScore * 0.15)).toFixed(3));
+        const statReversionDown = parseFloat(Math.max(0.05, Math.min(0.85, 0.5 + zScore * 0.15)).toFixed(3));
+        const statReversionNeutral = parseFloat(Math.max(0.05, 1.0 - statReversionUp - statReversionDown).toFixed(3));
         const confidence = parseFloat(Math.min(0.99, Math.max(0.70, 0.85 + Math.abs(zScore) * 0.05)).toFixed(2));
 
         ticks.push({
@@ -854,9 +866,13 @@ app.all("/api/quant/live-market", async (req, res) => {
           spread: parseFloat(spread.toFixed(2)),
           zScore,
           halfLife,
-          lstmUp: upProb,
-          lstmNeutral: neutralProb,
-          lstmDown: downProb,
+          // Transparent statistical naming + backwards compatibility aliases
+          reversionUpProb: statReversionUp,
+          reversionDownProb: statReversionDown,
+          reversionNeutralProb: statReversionNeutral,
+          lstmUp: statReversionUp,
+          lstmNeutral: statReversionNeutral,
+          lstmDown: statReversionDown,
           confidence
         });
       }
@@ -1069,7 +1085,25 @@ app.post("/api/quant/backtest", async (req, res) => {
         const totalTrades = trades.length;
         const winRate = totalTrades > 0 ? wins / totalTrades : 0;
         const totalPnl = equity - parseFloat(initialEquity);
-        const sharpeRatio = totalTrades > 0 ? parseFloat(((winRate - 0.45) * 4.2 + 1.2).toFixed(2)) : 0;
+
+        // Genuine statistical Sharpe Ratio calculated from trade percentage returns
+        let sharpeRatio = 0.0;
+        if (trades.length >= 2) {
+          const returns = trades.map(t => t.pnl / (parseFloat(initialEquity) * 0.10));
+          const meanReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
+          const variance = returns.reduce((a, b) => a + Math.pow(b - meanReturn, 2), 0) / (returns.length - 1);
+          const stdReturn = Math.sqrt(variance);
+          if (stdReturn > 1e-6) {
+            // Annualize based on estimated trade cadence across candle duration
+            const annualizedFactor = Math.sqrt((365 * 24) / Math.max(1, aligned.length / trades.length));
+            sharpeRatio = parseFloat(((meanReturn / stdReturn) * Math.min(annualizedFactor, 10)).toFixed(2));
+          }
+        }
+
+        // Real profit factor
+        const grossProfits = trades.filter(t => t.pnl > 0).reduce((sum, t) => sum + t.pnl, 0);
+        const grossLosses = Math.abs(trades.filter(t => t.pnl < 0).reduce((sum, t) => sum + t.pnl, 0));
+        const profitFactor = grossLosses > 0 ? parseFloat((grossProfits / grossLosses).toFixed(2)) : (grossProfits > 0 ? 99.0 : 0.0);
 
         return res.json({
           success: true,
@@ -1079,6 +1113,7 @@ app.post("/api/quant/backtest", async (req, res) => {
             winRate: parseFloat(winRate.toFixed(3)),
             totalPnl: parseFloat(totalPnl.toFixed(2)),
             sharpeRatio: Math.max(0, sharpeRatio),
+            profitFactor,
             maxDrawdown: parseFloat(maxDrawdown.toFixed(3)),
             equityCurve,
             trades: trades.slice(-25)
@@ -1280,6 +1315,11 @@ async function runAutoTraderCycle() {
     const scannerData = await scannerRes.json();
     if (!scannerData.success || !Array.isArray(scannerData.pairs)) return;
 
+    // Fail-Safe Interlock: Stop automated execution completely if data is not verified live from exchange
+    if (!scannerData.isLive) {
+      return;
+    }
+
     // 2. Get active open orders and active state positions
     const activeOrders = orderTracker.getActiveOrders();
     const storedPositions = stateDb.getAllPositions();
@@ -1292,12 +1332,12 @@ async function runAutoTraderCycle() {
       return; // Max capacity reached
     }
 
-    // 3. Filter valid READY candidates (Z-Score between 1.8 and 10.0)
+    // 3. Filter valid READY candidates (Z-Score between 1.8 and 5.5 max statistical bound)
     const readyCandidates = scannerData.pairs.filter((p: any) => {
       if (p.statusGroup !== 'READY' && p.signal === 'NEUTRAL') return false;
       const absZ = Math.abs(p.zScore);
-      // Filter out extreme broken testnet spikes (|Z| > 15.0)
-      if (absZ < 1.8 || absZ > 15.0) return false;
+      // Quantitative discipline: Entry between 1.8 and 5.5 (strictly matching SafeCoinFilter bounds)
+      if (absZ < 1.8 || absZ > 5.5) return false;
       if (openSymbols.has(p.symbol)) return false;
 
       // Cooldown check: 3 minutes per symbol
