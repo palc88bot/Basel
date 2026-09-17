@@ -35,6 +35,7 @@ export class Reconciliation {
   private reconcileInterval: number; // seconds
   private discrepancyThreshold: number; // USD (e.g. $10.00)
   private discrepancyPctThreshold: number; // 0.01 = 1%
+  private creationGracePeriodSec: number = 15; // 15-second grace period for newly submitted trades
   private executor: HummingbotExecutor;
   private orderTracker: OrderTracker;
   private balanceHistory: BalanceSnapshot[] = [];
@@ -51,6 +52,7 @@ export class Reconciliation {
       discrepancyThreshold?: number;
       discrepancyPctThreshold?: number;
       initialBotBalance?: number;
+      creationGracePeriodSec?: number;
     } = {},
     executor: HummingbotExecutor,
     orderTracker: OrderTracker
@@ -58,6 +60,7 @@ export class Reconciliation {
     this.reconcileInterval = config.reconcileInterval ?? 60; // default 60s
     this.discrepancyThreshold = config.discrepancyThreshold ?? 10.0; // $10
     this.discrepancyPctThreshold = config.discrepancyPctThreshold ?? 0.01; // 1%
+    this.creationGracePeriodSec = config.creationGracePeriodSec ?? 15; // 15s default grace period
     this.botBalance = config.initialBotBalance ?? 0.0;
     this.executor = executor;
     this.orderTracker = orderTracker;
@@ -248,14 +251,23 @@ export class Reconciliation {
     let matched = 0;
     let missing = 0;
     let orphaned = 0;
+    const nowSec = Date.now() / 1000;
 
     for (const [, trade] of this.tradeRecords.entries()) {
+      // Apply Grace Period: ignore discrepancy for trades created in the last 15 seconds
+      const tradeAgeSec = nowSec - trade.timestamp;
+      const isWithinGracePeriod = tradeAgeSec < this.creationGracePeriodSec;
+
       if (trade.recordedByBot && trade.recordedByExchange) {
         matched++;
       } else if (trade.recordedByBot && !trade.recordedByExchange) {
-        missing++;
+        if (!isWithinGracePeriod) {
+          missing++;
+        }
       } else if (!trade.recordedByBot && trade.recordedByExchange) {
-        orphaned++;
+        if (!isWithinGracePeriod) {
+          orphaned++;
+        }
       }
     }
 
