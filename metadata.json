@@ -1,0 +1,7 @@
+{
+  "name": "OMEGA QuantBrain",
+  "description": "Advanced Quantitative Crypto Trading & Statistical Arbitrage Engine combining Kalman Filter, Ornstein-Uhlenbeck, LSTM AI, and Hummingbot V2 strategies.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

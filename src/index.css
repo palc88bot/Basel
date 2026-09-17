@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Cairo', 'IBM Plex Sans Arabic', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  
+  code, kbd, samp, pre {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+/* Custom living pulse animations */
+@keyframes heartbeat {
+  0% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  14% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+  28% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  42% {
+    transform: scale(1.16);
+    opacity: 1;
+  }
+  70% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+}
+
+.animate-heartbeat {
+  animation: heartbeat 2.2s infinite ease-in-out;
+}
+
+@keyframes brain-glow {
+  0%, 100% {
+    filter: drop-shadow(0 0 15px rgba(6, 182, 212, 0.45));
+  }
+  50% {
+    filter: drop-shadow(0 0 28px rgba(99, 102, 241, 0.65));
+  }
+}
+
+.animate-brain-glow {
+  animation: brain-glow 3.5s infinite ease-in-out;
+}
+
+@keyframes signal-wave {
+  0% {
+    transform: scaleX(0.95) scaleY(0.9);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scaleX(1.05) scaleY(1.1);
+    opacity: 1;
+  }
+  100% {
+    transform: scaleX(0.95) scaleY(0.9);
+    opacity: 0.6;
+  }
+}
+
+.animate-signal-wave {
+  animation: signal-wave 2.8s infinite ease-in-out;
+}
