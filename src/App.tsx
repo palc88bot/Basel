@@ -309,45 +309,63 @@ export default function App() {
             const symbol = p.symbol;
             const currentPrice = Number(p.price) || 0;
             const volumeUsd = Number(p.volume24hUsd || p.volume24h) || 0;
-            const halfLife = typeof p.halfLifeSec === 'number' && !isNaN(p.halfLifeSec)
-              ? p.halfLifeSec
-              : (typeof p.halfLife === 'number' && !isNaN(p.halfLife) ? p.halfLife : 0);
             const spreadPct = Number(p.spreadPct) || 0.0005;
 
             // 1. Data Integrity: Strict numeric validity checks
-            if (!SanityChecks.isValidNumber(currentPrice, `${symbol} price`, false) || currentPrice <= 0) {
+            if (!SanityChecks.isValidNumber(currentPrice, `${symbol} price`, false) || currentPrice <= 0 || !isFinite(currentPrice)) {
               evaluatedCoins.push({
                 symbol,
                 status: 'REJECTED',
                 reason: `🚨 خطأ في سلامة البيانات (السعر غير صالح: ${currentPrice})`,
                 zScore: 0,
                 volume: volumeUsd,
-                halfLife
+                halfLife: 0
               });
               continue;
             }
 
-            // 2. Maintain Dynamic Rolling Window Price History (Last 100 Periods)
-            const hist = rollingPriceHistoryRef.current.get(symbol) || [];
-            hist.push(currentPrice);
-            if (hist.length > 100) {
-              hist.shift();
-            }
-            rollingPriceHistoryRef.current.set(symbol, hist);
+            let rollingZ = 0;
+            let halfLife = 0;
 
-            // 3. Compute Rolling Z-Score derived from the last 100 periods
-            let rollingZ = typeof p.zScore === 'number' && !isNaN(p.zScore) ? p.zScore : 0.0;
-            if (hist.length >= 8) {
-              const mean = hist.reduce((acc, val) => acc + val, 0) / hist.length;
-              const variance = hist.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / (hist.length - 1);
-              const stdDev = Math.sqrt(variance);
-              if (stdDev > 1e-6) {
-                rollingZ = (currentPrice - mean) / stdDev;
+            try {
+              // 2. Maintain Dynamic Rolling Window Price History (Persistent Look-back Buffer: 120+ ticks)
+              const hist = rollingPriceHistoryRef.current.get(symbol) || [];
+              hist.push(currentPrice);
+              if (hist.length > 120) {
+                hist.shift();
               }
+              rollingPriceHistoryRef.current.set(symbol, hist);
+
+              // 3. Compute Rolling Z-Score derived from persistent look-back buffer with NaN/Inf checks
+              if (hist.length >= 8) {
+                const mean = hist.reduce((acc, val) => acc + val, 0) / hist.length;
+                const variance = hist.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / (hist.length - 1);
+                const stdDev = Math.sqrt(variance);
+                if (isFinite(stdDev) && stdDev > 1e-6) {
+                  rollingZ = (currentPrice - mean) / stdDev;
+                }
+              } else if (typeof p.zScore === 'number' && !isNaN(p.zScore) && isFinite(p.zScore)) {
+                rollingZ = p.zScore;
+              }
+
+              // 4. Compute Ornstein-Uhlenbeck Half-Life using OLS regression on persistent history buffer
+              const serverHalfLife = typeof p.halfLifeSec === 'number' && !isNaN(p.halfLifeSec) && p.halfLifeSec > 0
+                ? p.halfLifeSec
+                : (typeof p.halfLife === 'number' && !isNaN(p.halfLife) && p.halfLife > 0 ? p.halfLife : 0);
+
+              if (serverHalfLife > 0 && SanityChecks.validateHalfLife(serverHalfLife)) {
+                halfLife = serverHalfLife;
+              } else if (hist.length >= 10) {
+                halfLife = smartSelector.calculateHalfLife(hist, 5);
+              }
+            } catch (mathErr) {
+              console.error(`[App] Mathematical error in Z-Score/Half-Life calculation for ${symbol}:`, mathErr);
+              rollingZ = 0;
+              halfLife = 0;
             }
 
-            // 4. Hard-Coded Circuit Breaker against Extreme Outliers (|Z| > 10.0 or NaN/Inf)
-            if (!SanityChecks.isValidNumber(rollingZ, 'Z-Score', true) || Math.abs(rollingZ) > 10.0) {
+            // 5. Hard-Coded Circuit Breaker against Extreme Outliers (|Z| > 10.0 or NaN/Inf)
+            if (!SanityChecks.isValidNumber(rollingZ, 'Z-Score', true) || !isFinite(rollingZ) || Math.abs(rollingZ) > 10.0) {
               evaluatedCoins.push({
                 symbol,
                 status: 'REJECTED',
@@ -359,7 +377,7 @@ export default function App() {
               continue;
             }
 
-            // 5. Black Swan / Extreme Momentum check (|Z| > 4.0)
+            // 6. Black Swan / Extreme Momentum check (|Z| > 4.0)
             if (Math.abs(rollingZ) > 4.0) {
               evaluatedCoins.push({
                 symbol,

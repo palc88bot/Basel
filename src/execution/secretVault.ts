@@ -59,18 +59,22 @@ export class ServerSecretVault {
       this.unlock(envPass).catch(err => {
         console.warn('[ServerSecretVault] Auto-unlock via env failed:', err.message);
       });
-    } else if (!this.isInitialized() && (process.env.BYBIT_API_KEY || process.env.BYBIT_API_SECRET)) {
-      // Auto-bootstrap default vault if API keys exist in env
-      const defaultPass = envPass || 'omega-in-server-quant-vault-default-key-2026';
-      this.initialize(defaultPass, {
+    } else if (envPass && !this.isInitialized() && (process.env.BYBIT_API_KEY || process.env.BINANCE_API_KEY)) {
+      // Auto-bootstrap vault ONLY if explicit VAULT_PASSPHRASE is provided in environment
+      this.initialize(envPass, {
         BYBIT_API_KEY: process.env.BYBIT_API_KEY || '',
         BYBIT_API_SECRET: process.env.BYBIT_API_SECRET || '',
         BYBIT_TESTNET: process.env.BYBIT_TESTNET || 'false',
+        BINANCE_API_KEY: process.env.BINANCE_API_KEY || '',
+        BINANCE_API_SECRET: process.env.BINANCE_API_SECRET || '',
+        BINANCE_TESTNET: process.env.BINANCE_TESTNET || 'false',
         TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
         TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || ''
       }).catch(err => {
         console.error('[ServerSecretVault] Auto-bootstrap failed:', err);
       });
+    } else if (!this.isInitialized()) {
+      console.log('[ServerSecretVault] 🔒 Vault uninitialized. Please set VAULT_PASSPHRASE in .env or initialize via UI/API.');
     }
   }
 

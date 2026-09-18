@@ -55,32 +55,45 @@ export class SmartPairSelector {
   }
 
   public calculateHalfLife(spreadSeries: number[], sampleIntervalSec: number = 5): number {
-    if (!Array.isArray(spreadSeries) || spreadSeries.length < 10) return 0;
+    try {
+      if (!Array.isArray(spreadSeries) || spreadSeries.length < 8) return 0;
 
-    // Simple OLS AR(1) estimation
-    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-    const n = spreadSeries.length - 1;
+      // Filter out invalid numbers (NaN, Infinity)
+      const cleanSeries = spreadSeries.filter(v => typeof v === 'number' && !isNaN(v) && isFinite(v));
+      if (cleanSeries.length < 8) return 0;
 
-    for (let i = 0; i < n; i++) {
-      const x = spreadSeries[i];
-      const y = spreadSeries[i + 1] - spreadSeries[i];
-      sumX += x;
-      sumY += y;
-      sumXY += x * y;
-      sumX2 += x * x;
+      // Simple OLS AR(1) estimation for Ornstein-Uhlenbeck Half-Life
+      let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+      const n = cleanSeries.length - 1;
+
+      for (let i = 0; i < n; i++) {
+        const x = cleanSeries[i];
+        const y = cleanSeries[i + 1] - cleanSeries[i];
+        if (!isNaN(x) && isFinite(x) && !isNaN(y) && isFinite(y)) {
+          sumX += x;
+          sumY += y;
+          sumXY += x * y;
+          sumX2 += x * x;
+        }
+      }
+
+      const denominator = n * sumX2 - sumX * sumX;
+      if (Math.abs(denominator) < 1e-12 || isNaN(denominator) || !isFinite(denominator)) return 0;
+
+      const lambda = (n * sumXY - sumX * sumY) / denominator;
+      if (isNaN(lambda) || !isFinite(lambda) || lambda >= 0) return 0; // Non-stationary or invalid drift
+
+      const periods = -Math.log(2) / lambda;
+      if (isNaN(periods) || !isFinite(periods) || periods <= 0) return 0;
+      
+      const halfLifeSec = periods * sampleIntervalSec;
+      if (isNaN(halfLifeSec) || !isFinite(halfLifeSec) || halfLifeSec <= 0 || halfLifeSec > 86400) return 0;
+
+      return Math.round(halfLifeSec);
+    } catch (err) {
+      console.error('[SmartPairSelector] Error calculating Half-Life:', err);
+      return 0;
     }
-
-    const denominator = n * sumX2 - sumX * sumX;
-    if (Math.abs(denominator) < 1e-12) return 0;
-
-    const lambda = (n * sumXY - sumX * sumY) / denominator;
-    if (lambda >= 0) return 0; // Non-stationary (no mean-reversion drift)
-
-    const periods = -Math.log(2) / lambda;
-    if (isNaN(periods) || !isFinite(periods) || periods <= 0) return 0;
-    
-    const halfLifeSec = periods * sampleIntervalSec;
-    return Math.round(halfLifeSec);
   }
 
   public calculateScore(

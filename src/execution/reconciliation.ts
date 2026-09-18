@@ -177,12 +177,20 @@ export class Reconciliation {
         verified
       };
     } catch (err: any) {
+      console.error('[Reconciliation] 🚨 CRITICAL Reconciliation failure:', err.message);
+      if (this.alertCallback) {
+        this.alertCallback(
+          'CRITICAL',
+          '🚨 فشل مطابقة الرصيد مع المنصة (Reconciliation Failure)',
+          `تعذر استرداد رصيد المحفظة والتحقق منه: ${err.message}`
+        );
+      }
       return {
         balanceMatched: false,
         exchangeBalance: 0,
         botBalance: this.botBalance,
-        discrepancy: 0,
-        discrepancyPct: 0,
+        discrepancy: this.botBalance,
+        discrepancyPct: 100,
         exchangeName: 'ERROR',
         verified: false
       };

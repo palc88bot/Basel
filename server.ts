@@ -515,7 +515,7 @@ app.post("/api/worker/config", (req, res) => {
   });
 });
 
-// Full Exchange Futures Scanner Endpoint (Powered by Non-Blocking Background Worker)
+// Full Exchange Futures Scanner Endpoint (Powered by Non-Blocking Background Worker - Single Source of Truth)
 app.get("/api/quant/futures-pairs", async (req, res) => {
   const now = Date.now();
   const elapsed = now - lastScanTimestamp;
@@ -527,13 +527,31 @@ app.get("/api/quant/futures-pairs", async (req, res) => {
       snapshot = await quantBackgroundWorker.runScanCycle();
     }
 
-    res.json({
-      ...snapshot,
+    if (!snapshot) {
+      return res.status(503).json({
+        success: false,
+        error: 'Worker is still initializing. Please wait a few seconds.'
+      });
+    }
+
+    return res.json({
+      success: snapshot.success ?? true,
+      isLive: snapshot.isLive ?? true,
+      exchangeName: snapshot.exchangeName ?? "BINANCE",
+      totalScannedCoins: snapshot.totalScannedCoins ?? 0,
+      readyCount: snapshot.readyCount ?? 0,
+      preparedCount: snapshot.preparedCount ?? 0,
+      backgroundCount: snapshot.backgroundCount ?? 0,
+      pairs: snapshot.pairs ?? [],
+      lastScanTime: snapshot.lastScanTime ?? new Date().toLocaleTimeString('ar-SA'),
+      scanDurationMs: snapshot.scanDurationMs ?? 0,
+      warning: snapshot.warning,
+      quantumPortfolio: snapshot.quantumPortfolio,
       nextScanRemainingSeconds: Math.floor(remainingMs / 1000)
     });
   } catch (err: any) {
-    console.error("Futures pairs scanner error:", err);
-    res.status(500).json({ success: false, error: err.message, pairs: [] });
+    console.error("[Server] Error in /api/quant/futures-pairs:", err.message);
+    return res.status(500).json({ success: false, error: err.message, pairs: [] });
   }
 });
 
@@ -2826,9 +2844,26 @@ app.get('/api/champion-challenger/config', (req, res) => {
   });
 });
 
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: Date.now(),
+    worker: quantBackgroundWorker.getStatus()
+  });
+});
+
+app.get('/ready', (req, res) => {
+  const status = quantBackgroundWorker.getStatus();
+  res.json({
+    ready: status.isRunning && !status.isPaused,
+    worker: status
+  });
+});
+
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down gracefully...');
+  quantBackgroundWorker.stop();
   dashboard.destroy();
   brokerReconciliation.destroy();
   await pointInTimeDb.destroy();
@@ -2837,6 +2872,7 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
   console.log('\n🛑 Shutting down gracefully...');
+  quantBackgroundWorker.stop();
   dashboard.destroy();
   brokerReconciliation.destroy();
   await pointInTimeDb.destroy();

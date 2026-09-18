@@ -62,6 +62,7 @@ export class ExtremeZAlertSystem {
   }
 
   public getSeverity(zScore: number): ZScoreSeverity {
+    if (!Number.isFinite(zScore)) return ZScoreSeverity.NORMAL;
     const absZ = Math.abs(zScore);
     if (absZ >= 6.0) return ZScoreSeverity.CRITICAL;
     if (absZ >= 4.0) return ZScoreSeverity.EXTREME;
@@ -76,6 +77,7 @@ export class ExtremeZAlertSystem {
     positionOpen: boolean = false,
     extraInfo?: { volume24hUsd?: number; spreadPct?: number; pairZ?: number }
   ): ZScoreAlert[] {
+    if (!Number.isFinite(zScore)) return [];
     const now = Date.now();
     const newAlerts: ZScoreAlert[] = [];
 

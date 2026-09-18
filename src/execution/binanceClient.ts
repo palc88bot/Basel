@@ -1,6 +1,25 @@
 import crypto from 'crypto';
 import { precisionManager } from './precisionManager';
 
+/**
+ * Fetch helper with timeout to prevent hanging connections
+ */
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 8000): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(id);
+    return response;
+  } catch (err: any) {
+    clearTimeout(id);
+    if (err.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs}ms: ${url}`);
+    }
+    throw err;
+  }
+}
+
 export interface BinanceWalletBalance {
   hasCredentials: boolean;
   totalEquity: number;
@@ -22,6 +41,13 @@ export interface BinanceLivePosition {
   unrealisedPnl: number;
   liqPrice: number;
   updateTime: number;
+}
+
+export interface BinanceOrderOptions {
+  stopPrice?: number;
+  workingType?: 'MARK_PRICE' | 'CONTRACT_PRICE';
+  reduceOnly?: boolean | 'true' | 'false';
+  timeInForce?: 'GTC' | 'IOC' | 'FOK' | 'GTX';
 }
 
 export class BinanceClient {
@@ -63,7 +89,7 @@ export class BinanceClient {
   }
 
   /**
-   * جلب مؤشرات الأسعار لجميع أزواج الفيوتشرز 24h Ticker في Binance Futures
+   * جلب مؤشرات الأسعار لجميع أزواج الفيوتشرز مع أسعار العرض والطلب الفعلية ومعدلات التمويل
    */
   public async fetchRealLinearTickers(symbols?: string[]): Promise<Map<string, {
     symbol: string;
@@ -84,9 +110,41 @@ export class BinanceClient {
   }>> {
     const map = new Map();
     try {
-      const url = `${this.baseUrl}/fapi/v1/ticker/24hr`;
-      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-      const data = await res.json();
+      const [tickerRes, bookRes, premiumRes] = await Promise.allSettled([
+        fetchWithTimeout(`${this.baseUrl}/fapi/v1/ticker/24hr`, { headers: { 'Accept': 'application/json' } }),
+        fetchWithTimeout(`${this.baseUrl}/fapi/v1/ticker/bookTicker`, { headers: { 'Accept': 'application/json' } }),
+        fetchWithTimeout(`${this.baseUrl}/fapi/v1/premiumIndex`, { headers: { 'Accept': 'application/json' } })
+      ]);
+
+      const data = tickerRes.status === 'fulfilled' ? await tickerRes.value.json() : [];
+      
+      const bookMap = new Map<string, { bid: number; ask: number }>();
+      if (bookRes.status === 'fulfilled') {
+        const bookData = await bookRes.value.json();
+        if (Array.isArray(bookData)) {
+          for (const b of bookData) {
+            bookMap.set(b.symbol, {
+              bid: parseFloat(b.bidPrice || '0'),
+              ask: parseFloat(b.askPrice || '0')
+            });
+          }
+        }
+      }
+
+      const premiumMap = new Map<string, { markPrice: number; indexPrice: number; lastFundingRate: number }>();
+      if (premiumRes.status === 'fulfilled') {
+        const premData = await premiumRes.value.json();
+        if (Array.isArray(premData)) {
+          for (const p of premData) {
+            premiumMap.set(p.symbol, {
+              markPrice: parseFloat(p.markPrice || '0'),
+              indexPrice: parseFloat(p.indexPrice || '0'),
+              lastFundingRate: parseFloat(p.lastFundingRate || '0.0001')
+            });
+          }
+        }
+      }
+
       if (Array.isArray(data)) {
         const targetSet = symbols && symbols.length > 0 ? new Set(symbols) : null;
         for (const item of data) {
@@ -100,25 +158,36 @@ export class BinanceClient {
           const volume24h = parseFloat(item.volume || '0');
           const highPrice24h = parseFloat(item.highPrice || '0');
           const lowPrice24h = parseFloat(item.lowPrice || '0');
-          const bid1 = lastPrice;
-          const ask1 = lastPrice;
+
+          const book = bookMap.get(item.symbol);
+          const bid1 = (book && book.bid > 0) ? book.bid : lastPrice;
+          const ask1 = (book && book.ask > 0) ? book.ask : lastPrice;
+
+          const prem = premiumMap.get(item.symbol);
+          const markPrice = (prem && prem.markPrice > 0) ? prem.markPrice : lastPrice;
+          const indexPrice = (prem && prem.indexPrice > 0) ? prem.indexPrice : lastPrice;
+          const fundingRate = prem ? prem.lastFundingRate : 0.0001;
+
+          const spreadPct = (ask1 > 0 && bid1 > 0 && ask1 >= bid1 && lastPrice > 0) 
+            ? (ask1 - bid1) / lastPrice 
+            : 0.00015;
 
           map.set(item.symbol, {
             symbol: item.symbol,
             lastPrice,
-            markPrice: lastPrice,
-            indexPrice: lastPrice,
+            markPrice,
+            indexPrice,
             prevPrice24h: prevPrice,
             price24hPcnt,
             highPrice24h,
             lowPrice24h,
             volume24h,
             turnover24h,
-            fundingRate: 0.0001,
-            openInterest: turnover24h * 0.1,
+            fundingRate,
+            openInterest: turnover24h * 0.15,
             bid1Price: bid1,
             ask1Price: ask1,
-            spreadPct: (ask1 > 0 && bid1 > 0 && ask1 > bid1 && lastPrice > 0) ? (ask1 - bid1) / lastPrice : 0.00015
+            spreadPct
           });
         }
       }
@@ -162,7 +231,7 @@ export class BinanceClient {
     try {
       const queryString = this.signParams({});
       const url = `${this.baseUrl}/fapi/v2/account?${queryString}`;
-      const res = await fetch(url, {
+      const res = await fetchWithTimeout(url, {
         method: 'GET',
         headers: {
           'X-MBX-APIKEY': this.apiKey,
@@ -216,10 +285,11 @@ export class BinanceClient {
   /**
    * جلب الشموع المباشرة الحقيقية لـ Binance Futures
    */
-  public async fetchRealKlines(symbol: string = 'BTCUSDT', interval: string = '1m', limit: number = 35): Promise<Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }>> {
+  public async fetchRealKlines(symbol: string = 'BTCUSDT', interval: string = '1m', limit: number = 50): Promise<Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }>> {
     try {
-      const url = `${this.baseUrl}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      const cleanSym = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const url = `${this.baseUrl}/fapi/v1/klines?symbol=${cleanSym}&interval=${interval}&limit=${limit}`;
+      const res = await fetchWithTimeout(url, { headers: { 'Accept': 'application/json' } });
       const data = await res.json();
 
       if (Array.isArray(data)) {
@@ -248,7 +318,7 @@ export class BinanceClient {
     try {
       const queryString = this.signParams({});
       const url = `${this.baseUrl}/fapi/v2/positionRisk?${queryString}`;
-      const res = await fetch(url, {
+      const res = await fetchWithTimeout(url, {
         headers: {
           'X-MBX-APIKEY': this.apiKey,
           'Accept': 'application/json'
@@ -283,16 +353,24 @@ export class BinanceClient {
   }
 
   /**
-   * تنفيذ أمر تداول مباشر في Binance Futures (Testnet or Live) مع ضبط دقة الـ Lot Size و Tick Size
+   * تنفيذ أمر تداول مباشر في Binance Futures (Testnet or Live)
+   * يدعم الأوامر الشرطية الحقيقية (STOP_MARKET / STOP) وحماية reduceOnly
    */
-  public async executeOrder(symbol: string, side: 'BUY' | 'SELL', type: 'MARKET' | 'LIMIT', quantity: number, price?: number): Promise<{ success: boolean; orderId?: string; message?: string; raw?: any }> {
+  public async executeOrder(
+    symbol: string, 
+    side: 'BUY' | 'SELL', 
+    type: 'MARKET' | 'LIMIT' | 'STOP_MARKET' | 'STOP' | 'TAKE_PROFIT_MARKET' | 'TAKE_PROFIT', 
+    quantity: number, 
+    price?: number,
+    options: BinanceOrderOptions = {}
+  ): Promise<{ success: boolean; orderId?: string; message?: string; raw?: any }> {
     if (!this.hasCredentials()) {
       return { success: false, message: 'مفاتيح Binance غير معرفة في الخزنة.' };
     }
 
     try {
       const cleanSymbol = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
-      const refPrice = price || 1.0;
+      const refPrice = price || options.stopPrice || 1.0;
       
       // 1. Precision Validation and Quantization
       const validation = precisionManager.validateOrder(cleanSymbol, quantity, refPrice);
@@ -312,15 +390,26 @@ export class BinanceClient {
         quantity: validation.qtyString
       };
 
-      if (type === 'LIMIT' && price) {
+      if ((type === 'LIMIT' || type === 'STOP' || type === 'TAKE_PROFIT') && price) {
         params.price = validation.priceString;
-        params.timeInForce = 'GTC';
+        params.timeInForce = options.timeInForce || 'GTC';
+      }
+
+      // Conditional Stop / Take Profit Orders
+      if (options.stopPrice) {
+        params.stopPrice = precisionManager.roundPrice(cleanSymbol, options.stopPrice).toString();
+        params.workingType = options.workingType || 'MARK_PRICE';
+      }
+
+      // Explicit reduceOnly protection
+      if (options.reduceOnly === true || options.reduceOnly === 'true') {
+        params.reduceOnly = 'true';
       }
 
       const queryString = this.signParams(params);
       const url = `${this.baseUrl}/fapi/v1/order?${queryString}`;
 
-      const res = await fetch(url, {
+      const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {
           'X-MBX-APIKEY': this.apiKey,
@@ -333,7 +422,7 @@ export class BinanceClient {
         return {
           success: true,
           orderId: String(data.orderId),
-          message: `تم تنفيذ أمر ${side} على ${cleanSymbol} في Binance Futures بنجاح! (الكمية: ${validation.qtyString})`,
+          message: `تم تنفيذ أمر ${type} ${side} على ${cleanSymbol} بنجاح! (الكمية: ${validation.qtyString}${options.reduceOnly ? ' | ReduceOnly' : ''})`,
           raw: data
         };
       }

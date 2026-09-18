@@ -14,6 +14,7 @@
  */
 
 import { OrderBookSimulator } from './OrderBookSimulator';
+import { CircuitBreakersManager } from '../quant/circuitBreakers';
 
 export interface PaperOrder {
   orderId: string;
@@ -80,6 +81,7 @@ export class PaperTradingEngine {
   private config: PaperTradingConfig;
   private balance: number;
   private orderBookSim: OrderBookSimulator;
+  private circuitBreakers: CircuitBreakersManager;
   
   // البيانات الحية
   private orders: Map<string, PaperOrder> = new Map();
@@ -98,7 +100,8 @@ export class PaperTradingEngine {
   
   constructor(
     config: Partial<PaperTradingConfig>,
-    orderBookSim: OrderBookSimulator
+    orderBookSim: OrderBookSimulator,
+    circuitBreakers?: CircuitBreakersManager
   ) {
     this.config = {
       initialBalance: config.initialBalance || 1000,
@@ -109,18 +112,24 @@ export class PaperTradingEngine {
       slippageMultiplier: config.slippageMultiplier || 1.0,
       latencyMinMs: config.latencyMinMs || 50,
       latencyMaxMs: config.latencyMaxMs || 150,
-      maxPositionSizePct: config.maxPositionSizePct || 0.05  // 5%
+      maxPositionSizePct: config.maxPositionSizePct || 0.05  // 5% default
     };
     
     this.balance = this.config.initialBalance;
     this.peakBalance = this.balance;
     this.orderBookSim = orderBookSim;
+    this.circuitBreakers = circuitBreakers || new CircuitBreakersManager(this.balance);
     
     console.log('✅ PaperTradingEngine initialized');
     console.log(`   Balance: $${this.balance}`);
     console.log(`   Leverage: ${this.config.leverage}x`);
     console.log(`   Taker Fee: ${(this.config.takerFeeRate * 100).toFixed(3)}%`);
     console.log(`   Maker Fee: ${(this.config.makerFeeRate * 100).toFixed(3)}%`);
+    console.log(`   Max Position Size: ${(this.config.maxPositionSizePct * 100).toFixed(1)}%`);
+  }
+
+  public getCircuitBreakers(): CircuitBreakersManager {
+    return this.circuitBreakers;
   }
 
   // ==================== تنفيذ الأوامر ====================
@@ -137,20 +146,41 @@ export class PaperTradingEngine {
     const orderId = `PAPER-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
     const latency = this.simulateLatency();
     
+    // 0. فحص قاطع الدائرة (Circuit Breaker Gate)
+    const cbCheck = this.circuitBreakers.check(this.balance, this.maxDrawdown);
+    if (cbCheck.halted) {
+      return this.createRejectedOrder(orderId, symbol, 'BUY', orderType, quantity, `Circuit Breaker Halted: ${cbCheck.reason}`);
+    }
+
     // 🕐 محاكاة التأخير
     await this.sleep(latency);
     
-    // التحقق من الرصيد
-    const requiredMargin = (quantity * (limitPrice || this.getMidPrice(symbol))) / this.config.leverage;
+    // التحقق من الرصيد والحد الأقصى لحجم الصفقة
+    const refPrice = limitPrice || this.getMidPrice(symbol) || 1.0;
+    const requiredMargin = (quantity * refPrice) / this.config.leverage;
+    
     if (requiredMargin > this.balance) {
       return this.createRejectedOrder(orderId, symbol, 'BUY', orderType, quantity, 'Insufficient balance');
+    }
+
+    // Enforce maxPositionSizePct
+    const maxAllowedMargin = this.balance * this.config.maxPositionSizePct;
+    if (requiredMargin > maxAllowedMargin) {
+      return this.createRejectedOrder(
+        orderId, 
+        symbol, 
+        'BUY', 
+        orderType, 
+        quantity, 
+        `Exceeds max position size limit of ${(this.config.maxPositionSizePct * 100).toFixed(1)}% ($${maxAllowedMargin.toFixed(2)})`
+      );
     }
     
     // حساب سعر التنفيذ (مع الانزلاق)
     let execution = this.orderBookSim.calculateExecutionPrice(symbol, 'BUY', quantity);
     if (!execution) {
       // إذا لم يكن هناك دفتر أوامر، نبنيه تلقائياً من السعر التقديري
-      const estPrice = limitPrice || 100.0;
+      const estPrice = limitPrice || this.getMidPrice(symbol) || refPrice;
       this.orderBookSim.buildSyntheticOrderBook(symbol, estPrice, 50_000_000);
       execution = this.orderBookSim.calculateExecutionPrice(symbol, 'BUY', quantity);
     }
@@ -278,7 +308,7 @@ export class PaperTradingEngine {
     this.totalFees += feeUsd;
     this.totalFundingCost += fundingCost;
     
-    // تسجيل الصفقة
+    // تسجيل الصفقة وإعلام قاطع الدائرة
     this.recordTrade(symbol, 'LONG', entryPrice, finalPrice, quantity, feeUsd, fundingCost, adjustedSlippage, netPnl);
     
     // إزالة المركز
@@ -293,16 +323,40 @@ export class PaperTradingEngine {
   /**
    * فتح مركز Short
    */
-  async openShort(symbol: string, quantity: number): Promise<PaperOrder> {
+  async openShort(symbol: string, quantity: number, refPrice?: number): Promise<PaperOrder> {
     const orderId = `PAPER-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
     const latency = this.simulateLatency();
     
+    // 0. Circuit Breakers check
+    const cbCheck = this.circuitBreakers.check(this.balance, this.maxDrawdown);
+    if (cbCheck.halted) {
+      return this.createRejectedOrder(orderId, symbol, 'SELL', 'MARKET', quantity, `Circuit Breaker Halted: ${cbCheck.reason}`);
+    }
+
     await this.sleep(latency);
     
+    const estimatedPrice = refPrice || this.getMidPrice(symbol) || 1.0;
+    const requiredMargin = (quantity * estimatedPrice) / this.config.leverage;
+    if (requiredMargin > this.balance) {
+      return this.createRejectedOrder(orderId, symbol, 'SELL', 'MARKET', quantity, 'Insufficient balance');
+    }
+
+    const maxAllowedMargin = this.balance * this.config.maxPositionSizePct;
+    if (requiredMargin > maxAllowedMargin) {
+      return this.createRejectedOrder(
+        orderId, 
+        symbol, 
+        'SELL', 
+        'MARKET', 
+        quantity, 
+        `Exceeds max position size limit of ${(this.config.maxPositionSizePct * 100).toFixed(1)}% ($${maxAllowedMargin.toFixed(2)})`
+      );
+    }
+
     // حساب سعر التنفيذ
     let execution = this.orderBookSim.calculateExecutionPrice(symbol, 'SELL', quantity);
     if (!execution) {
-      this.orderBookSim.buildSyntheticOrderBook(symbol, 100.0, 50_000_000);
+      this.orderBookSim.buildSyntheticOrderBook(symbol, estimatedPrice, 50_000_000);
       execution = this.orderBookSim.calculateExecutionPrice(symbol, 'SELL', quantity);
     }
 
@@ -562,6 +616,9 @@ export class PaperTradingEngine {
       this.losingTrades++;
     }
     
+    // CircuitBreakers: Record trade result
+    this.circuitBreakers.recordTradeResult(netPnl);
+
     // تحديث Maximum Drawdown
     if (this.balance > this.peakBalance) {
       this.peakBalance = this.balance;
@@ -570,6 +627,9 @@ export class PaperTradingEngine {
     if (drawdown > this.maxDrawdown) {
       this.maxDrawdown = drawdown;
     }
+
+    // CircuitBreakers: Evaluate drawdown limit
+    this.circuitBreakers.check(this.balance, this.maxDrawdown);
   }
 
   /**

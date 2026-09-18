@@ -1,6 +1,25 @@
 import crypto from 'crypto';
 import { precisionManager } from './precisionManager';
 
+/**
+ * Fetch helper with timeout to prevent hanging connections
+ */
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 8000): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(id);
+    return response;
+  } catch (err: any) {
+    clearTimeout(id);
+    if (err.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs}ms: ${url}`);
+    }
+    throw err;
+  }
+}
+
 export interface BybitTickerData {
   symbol: string;
   lastPrice: number;
@@ -43,6 +62,22 @@ export interface BybitLivePosition {
   stopLoss: number;
   createdTime: number;
   updatedTime: number;
+}
+
+export interface BybitOrderParams {
+  symbol: string;
+  side: 'Buy' | 'Sell';
+  orderType: 'Limit' | 'Market';
+  qty: string;
+  price?: string;
+  orderLinkId?: string;
+  positionIdx?: number;
+  reduceOnly?: boolean;
+  triggerPrice?: string;
+  triggerDirection?: 1 | 2; // 1 = Rise to trigger, 2 = Fall to trigger
+  triggerBy?: 'MarkPrice' | 'IndexPrice' | 'LastPrice';
+  orderFilter?: 'Order' | 'StopOrder' | 'tpslOrder';
+  timeInForce?: 'GTC' | 'IOC' | 'FOK' | 'PostOnly';
 }
 
 export class BybitClient {
@@ -295,28 +330,20 @@ export class BybitClient {
   }
 
   /**
-   * إرسال أمر تداول حقيقي إلى Bybit V5 مع التحقق ومعايرة الدقة (Step Size & Tick Size)
+   * إرسال أمر تداول حقيقي إلى Bybit V5 مع التحقق ومعايرة الدقة ودعم reduceOnly والأوامر الشرطية Stop Orders
    */
-  public async placeRealOrder(params: {
-    symbol: string;
-    side: 'Buy' | 'Sell';
-    orderType: 'Limit' | 'Market';
-    qty: string;
-    price?: string;
-    orderLinkId?: string;
-    positionIdx?: number;
-  }): Promise<{ success: boolean; orderId?: string; orderLinkId?: string; error?: string }> {
+  public async placeRealOrder(params: BybitOrderParams): Promise<{ success: boolean; orderId?: string; orderLinkId?: string; error?: string }> {
     if (!this.hasCredentials()) {
       return {
         success: false,
-        error: 'مفاتيح Bybit API غير مضبوطة في متغيرات الخادم (BYBIT_API_KEY & BYBIT_API_SECRET). تم إلغاء أي تداول وهمي لمنع المغالطة.'
+        error: 'مفاتيح Bybit API غير مضبوطة في متغيرات الخادم (BYBIT_API_KEY & BYBIT_API_SECRET).'
       };
     }
 
     try {
       const cleanSymbol = params.symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
       const rawQty = parseFloat(params.qty) || 0;
-      const rawPrice = params.price ? parseFloat(params.price) : 1.0;
+      const rawPrice = params.price ? parseFloat(params.price) : (params.triggerPrice ? parseFloat(params.triggerPrice) : 1.0);
 
       // 1. Precision Validation and Quantization
       const validation = precisionManager.validateOrder(cleanSymbol, rawQty, rawPrice);
@@ -341,17 +368,30 @@ export class BybitClient {
 
       if (params.orderType === 'Limit' && params.price) {
         payload.price = validation.priceString;
-        payload.timeInForce = 'GTC';
+        payload.timeInForce = params.timeInForce || 'GTC';
       }
 
       if (params.orderLinkId) {
         payload.orderLinkId = params.orderLinkId;
       }
 
+      // Explicit reduceOnly protection
+      if (params.reduceOnly === true) {
+        payload.reduceOnly = true;
+      }
+
+      // Conditional Stop / Trigger Orders
+      if (params.triggerPrice) {
+        payload.triggerPrice = precisionManager.roundPrice(cleanSymbol, parseFloat(params.triggerPrice)).toString();
+        payload.triggerDirection = params.triggerDirection ?? (params.side === 'Buy' ? 1 : 2);
+        payload.triggerBy = params.triggerBy || 'MarkPrice';
+        payload.orderFilter = params.orderFilter || 'StopOrder';
+      }
+
       const body = JSON.stringify(payload);
       const signature = this.generateSignature(timestamp, recvWindow, body);
 
-      const res = await fetch(`${this.baseUrl}/v5/order/create`, {
+      const res = await fetchWithTimeout(`${this.baseUrl}/v5/order/create`, {
         method: 'POST',
         headers: {
           'X-BAPI-API-KEY': this.apiKey,

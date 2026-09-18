@@ -97,6 +97,7 @@ export interface QuantWorkerDependencies {
 }
 
 export class QuantBackgroundWorker {
+  private startTime: number = Date.now();
   private config: WorkerConfig;
   private isRunning: boolean = false;
   private isPaused: boolean = false;
@@ -116,6 +117,8 @@ export class QuantBackgroundWorker {
   // Callbacks
   private callbacks: QuantWorkerCallbacks = {};
 
+  private executedSignalKeys: Map<string, number> = new Map(); // Idempotency tracker with TTL (5 min)
+
   constructor(
     private readonly deps: QuantWorkerDependencies,
     config: Partial<WorkerConfig> = {}
@@ -127,12 +130,22 @@ export class QuantBackgroundWorker {
     this.config = {
       intervalMs: Math.max(3000, config.intervalMs ?? 8000),
       maxPairsPerCycle: config.maxPairsPerCycle ?? 50,
-      minVolumeUsd: config.minVolumeUsd ?? 10_000_000,
+      minVolumeUsd: config.minVolumeUsd ?? 50_000_000, // Institutional $50M standard
       entryZThreshold: config.entryZThreshold ?? 1.8,
       maxConcurrentPositions: config.maxConcurrentPositions ?? 3,
       enableAutoTrading: config.enableAutoTrading ?? false, // مغلق افتراضياً للأمان المؤسسي
       tradeAllocationPct: config.tradeAllocationPct ?? 0.05
     };
+
+    // Periodic GC for executed signal keys
+    setInterval(() => {
+      const now = Date.now();
+      for (const [key, ts] of this.executedSignalKeys.entries()) {
+        if (now - ts > 300_000) { // 5 minutes
+          this.executedSignalKeys.delete(key);
+        }
+      }
+    }, 60_000);
 
     console.log('[QuantWorker] 🛡️ 24/7 Autonomous Background Worker Initialized');
     console.log(`   Interval: ${this.config.intervalMs}ms | Auto-Trading: ${this.config.enableAutoTrading ? 'ACTIVE' : 'SAFE MODE (OFF)'}`);
@@ -209,6 +222,19 @@ export class QuantBackgroundWorker {
     this.isPaused = true;
     this.config.enableAutoTrading = false;
 
+    if (this.deps.stateDb) {
+      try {
+        if (typeof (this.deps.stateDb as any).setKillSwitch === 'function') {
+          await (this.deps.stateDb as any).setKillSwitch(true);
+        }
+        if (typeof (this.deps.stateDb as any).setAutoEngineActive === 'function') {
+          await (this.deps.stateDb as any).setAutoEngineActive(false);
+        }
+      } catch (e: any) {
+        console.error('[QuantWorker] Failed to persist kill switch to stateDb:', e.message);
+      }
+    }
+
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -241,6 +267,14 @@ export class QuantBackgroundWorker {
     this.isScanningActive = true;
     const startTime = performance.now();
     this.cycleCount++;
+
+    // Safety timeout: reset scanning active flag if cycle exceeds 30s
+    const scanTimeoutTimer = setTimeout(() => {
+      if (this.isScanningActive) {
+        console.warn('[QuantWorker] ⚠️ Scan cycle exceeded 30s safety threshold. Resetting active flag.');
+        this.isScanningActive = false;
+      }
+    }, 30_000);
 
     const cycleResult: WorkerCycleResult = {
       cycleId: this.cycleCount,
@@ -327,7 +361,28 @@ export class QuantBackgroundWorker {
 
       // Real Dynamic Benchmark Price (BTCUSDT) from live tickers
       const btcItem = rawList.find(i => i.symbol === 'BTCUSDT');
-      const btcPrice = btcItem && btcItem.price > 0 ? btcItem.price : 68000;
+      if (!btcItem || btcItem.price <= 0) {
+        const noBtcSnapshot: QuantWorkerSnapshot = {
+          success: true,
+          isLive: false,
+          exchangeName,
+          totalScannedCoins: rawList.length,
+          readyCount: 0,
+          preparedCount: 0,
+          backgroundCount: 0,
+          pairs: [],
+          lastScanTime: new Date().toLocaleTimeString('ar-SA'),
+          scanDurationMs: fetchLatencyMs,
+          warning: '⚠️ سعر BTCUSDT المرجعي الحي غير متوفر - تم تعليق الدورة لضمان دقة معايرة كالمان.'
+        };
+        this.currentSnapshot = noBtcSnapshot;
+        this.broadcast(noBtcSnapshot);
+        cycleResult.status = 'PARTIAL';
+        cycleResult.errors.push('Live BTCUSDT price unavailable for benchmark calibration');
+        this.finalizeCycle(cycleResult, startTime);
+        return noBtcSnapshot;
+      }
+      const btcPrice = btcItem.price;
 
       // Update Kalman filters and SafeCoinFilter metrics for all symbols
       rawList.forEach((item) => {
@@ -552,11 +607,14 @@ export class QuantBackgroundWorker {
         beta: p.beta
       }));
 
-      const quantumOpt = QuantumInspiredPortfolioOptimizer.optimize(
-        candidatesForOptimization,
-        1000.0,
-        this.config.maxConcurrentPositions
-      );
+      let quantumOpt: QuantumOptimizationResult | undefined;
+      if (candidatesForOptimization.length > 0) {
+        quantumOpt = QuantumInspiredPortfolioOptimizer.optimize(
+          candidatesForOptimization,
+          1000.0,
+          this.config.maxConcurrentPositions
+        );
+      }
       cycleResult.quantumOptimization = quantumOpt;
 
       // Trigger Signal Callbacks
@@ -609,6 +667,7 @@ export class QuantBackgroundWorker {
       this.finalizeCycle(cycleResult, startTime);
       throw err;
     } finally {
+      clearTimeout(scanTimeoutTimer);
       this.isScanningActive = false;
     }
   }
@@ -629,9 +688,15 @@ export class QuantBackgroundWorker {
       return 0;
     }
 
-    // Sort signals by statistical conviction: highest absolute Z-score first
+    // Sort signals by Conviction Score: |Z| weighted by fast Half-life
     const sortedSignals = [...signals]
-      .sort((a, b) => Math.abs(b.zScore) - Math.abs(a.zScore))
+      .sort((a, b) => {
+        const hlA = Math.max(10, a.halfLifeSec || 300);
+        const hlB = Math.max(10, b.halfLifeSec || 300);
+        const convictionA = Math.abs(a.zScore) / (hlA / 300);
+        const convictionB = Math.abs(b.zScore) / (hlB / 300);
+        return convictionB - convictionA;
+      })
       .slice(0, availableSlots);
 
     for (const sig of sortedSignals) {
@@ -640,9 +705,17 @@ export class QuantBackgroundWorker {
         continue;
       }
 
+      // 2. Idempotency Check: prevent duplicate execution for same signal window (30s)
+      const idempotencyKey = `${sig.symbol}-${sig.signal}-${Math.floor(Date.now() / 30_000)}`;
+      if (this.executedSignalKeys.has(idempotencyKey)) {
+        console.log(`[QuantWorker] 🛡️ Idempotent signal execution skipped for ${sig.symbol}`);
+        continue;
+      }
+
       try {
         const isSuccess = await this.executeTrade(sig);
         if (isSuccess) {
+          this.executedSignalKeys.set(idempotencyKey, Date.now());
           executedCount++;
         }
       } catch (err: any) {
@@ -662,33 +735,50 @@ export class QuantBackgroundWorker {
     const side: 'BUY' | 'SELL' = isBuy ? 'BUY' : 'SELL';
 
     try {
-      // 1. حساب حجم الصفقة المؤسسي (افتراضي 5% من رأس المال)
-      const walletBalance = 1000.0; // يمكن ربطه برصيد الحساب اللحظي
-      const tradeSizeUsd = walletBalance * this.config.tradeAllocationPct;
-      const rawQuantity = tradeSizeUsd / (price > 0 ? price : 1.0);
+      // 1. التحقق من الرصيد الحي والمتاح
+      const walletBalance = (this.deps.executor && typeof this.deps.executor.getWalletBalance === 'function')
+        ? await this.deps.executor.getWalletBalance()
+        : 0;
 
-      // 2. فحص ومعايرة الدقة بواسطة PrecisionManager
-      let calibratedQty = rawQuantity;
-      let calibratedPrice = price;
-
-      if (this.deps.precisionManager) {
-        const validation = this.deps.precisionManager.validateOrder(symbol, rawQuantity, price);
-        if (!validation.isValid) {
-          console.warn(`[QuantWorker] ⚠️ Precision check blocked trade for ${symbol}: ${validation.reason}`);
-          return false;
-        }
-        calibratedQty = validation.roundedQuantity;
-        calibratedPrice = validation.roundedPrice;
+      if (walletBalance <= 0) {
+        console.warn(`[QuantWorker] ⚠️ Cannot trade ${symbol}: Wallet balance is 0 or unverified ($${walletBalance}).`);
+        return false;
       }
 
-      // 3. إرسال الأمر للمنصة عبر HummingbotExecutor
-      const positionId = `QW-${symbol}-${Date.now()}`;
+      const currentPositions = this.deps.stateDb?.getAllPositions() || [];
+      const totalExposure = currentPositions.reduce((sum, p) => sum + (p.entryPrice * p.size), 0);
+      const availableBalance = Math.max(0, walletBalance - totalExposure);
+
+      if (availableBalance <= 10.0) {
+        console.warn(`[QuantWorker] ⚠️ Insufficient available balance for ${symbol} ($${availableBalance.toFixed(2)}).`);
+        return false;
+      }
+
+      // 2. حساب حجم الصفقة المؤسسي بناءً على الرصيد المتاح
+      const tradeSizeUsd = availableBalance * this.config.tradeAllocationPct;
+      const rawQuantity = tradeSizeUsd / (price > 0 ? price : 1.0);
+
+      // 3. فحص ومعايرة الدقة بواسطة PrecisionManager (إلزامي)
+      if (!this.deps.precisionManager) {
+        console.error(`[QuantWorker] ❌ FATAL: precisionManager is required for execution.`);
+        return false;
+      }
+      const validation = this.deps.precisionManager.validateOrder(symbol, rawQuantity, price);
+      if (!validation.isValid) {
+        console.warn(`[QuantWorker] ⚠️ Precision check blocked trade for ${symbol}: ${validation.reason}`);
+        return false;
+      }
+      let calibratedQty = validation.roundedQuantity;
+      let calibratedPrice = validation.roundedPrice;
+
+      // 4. إرسال الأمر للمنصة عبر HummingbotExecutor (MARKET لتفادي تفويت الإشارة)
+      const positionId = `QW-${symbol}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
       const orderResult = await this.deps.executor!.placeOrder({
         tradingPair: symbol,
         isBuy,
         amount: calibratedQty,
         price: calibratedPrice,
-        orderType: 'LIMIT',
+        orderType: 'MARKET',
         positionId
       });
 
@@ -696,8 +786,30 @@ export class QuantBackgroundWorker {
         const slPrice = isBuy ? calibratedPrice * 0.97 : calibratedPrice * 1.03;
         const tpPrice = isBuy ? calibratedPrice * 1.05 : calibratedPrice * 0.95;
 
-        // 4. تسجيل المركز في قاعدة بيانات الحالة الحية
-        this.deps.stateDb!.savePosition(
+        // 5. تسليح الوقف الكارثي والخروج الهجين (Hybrid Exit Protection) إلزامي أولاً لمنع نافذة الخطر
+        if (!this.deps.hybridExit) {
+          console.error(`[QuantWorker] ❌ FATAL: hybridExit is required. Cancelling order.`);
+          if (orderResult.orderId) {
+            await this.deps.executor!.cancelOrder(orderResult.orderId, symbol);
+          }
+          return false;
+        }
+
+        await this.deps.hybridExit.armExitProtection({
+          symbol,
+          side,
+          entryPrice: calibratedPrice,
+          entryZ: zScore,
+          size: calibratedQty
+        });
+
+        // 6. تسجيل المركز في قاعدة بيانات الحالة الحية (مع التحقق)
+        if (!this.deps.stateDb) {
+          console.error(`[QuantWorker] ❌ FATAL: stateDb is required.`);
+          return false;
+        }
+
+        this.deps.stateDb.savePosition(
           symbol,
           isBuy ? 'LONG' : 'SHORT',
           calibratedPrice,
@@ -705,17 +817,6 @@ export class QuantBackgroundWorker {
           slPrice,
           tpPrice
         );
-
-        // 5. تسليح الوقف الكارثي والخروج الهجين (Hybrid Exit Protection)
-        if (this.deps.hybridExit) {
-          await this.deps.hybridExit.armExitProtection({
-            symbol,
-            side,
-            entryPrice: calibratedPrice,
-            entryZ: zScore,
-            size: calibratedQty
-          });
-        }
 
         console.log(
           `[QuantWorker] 🟢 Executed Trade: ${symbol} ${side} @ ${calibratedPrice} ` +
@@ -771,14 +872,15 @@ export class QuantBackgroundWorker {
     const spreadHistory = kf.getHistory().spread;
     const isCalibrated = spreadHistory.length >= 10;
 
-    let zScore = isCalibrated ? kf.getZScore(30) : 0.0;
+    let zScore = isCalibrated ? kf.getZScore(Math.min(30, spreadHistory.length)) : 0.0;
     if (isNaN(zScore) || !isFinite(zScore)) {
       zScore = 0.0;
     }
-    zScore = parseFloat(Math.max(-4.0, Math.min(4.0, zScore)).toFixed(2));
+    zScore = parseFloat(Math.max(-8.0, Math.min(8.0, zScore)).toFixed(2));
 
-    const rawHalfLifeSec = this.deps.smartPairSelector.calculateHalfLife(spreadHistory, 5);
-    const isHalfLifeValid = SanityChecks.validateHalfLife(rawHalfLifeSec);
+    const cycleIntervalSec = Math.max(1, Math.round(this.config.intervalMs / 1000));
+    const rawHalfLifeSec = this.deps.smartPairSelector.calculateHalfLife(spreadHistory, cycleIntervalSec);
+    const isHalfLifeValid = spreadHistory.length >= 10 && SanityChecks.validateHalfLife(rawHalfLifeSec);
     const halfLifeSec = isHalfLifeValid ? rawHalfLifeSec : 0;
 
     return {
@@ -794,6 +896,9 @@ export class QuantBackgroundWorker {
 
   private finalizeCycle(result: WorkerCycleResult, startTime: number): void {
     result.durationMs = Math.round(performance.now() - startTime);
+    if (result.errors.length > 10) {
+      result.errors = result.errors.slice(-10);
+    }
     this.lastCycleResult = result;
 
     this.cycleHistory.push(result);
@@ -858,7 +963,7 @@ export class QuantBackgroundWorker {
       cycleCount: this.cycleCount,
       lastCycle: this.lastCycleResult,
       config: { ...this.config },
-      uptimeSec: Math.floor((this.cycleCount * this.config.intervalMs) / 1000)
+      uptimeSec: Math.floor((Date.now() - this.startTime) / 1000)
     };
   }
 
@@ -871,6 +976,15 @@ export class QuantBackgroundWorker {
   }
 
   public setConfig(newConfig: Partial<WorkerConfig>): void {
+    if (newConfig.intervalMs !== undefined && newConfig.intervalMs < 3000) {
+      throw new Error('intervalMs must be at least 3000ms');
+    }
+    if (newConfig.entryZThreshold !== undefined && (newConfig.entryZThreshold <= 0 || newConfig.entryZThreshold > 5)) {
+      throw new Error('entryZThreshold must be between 0 and 5');
+    }
+    if (newConfig.maxConcurrentPositions !== undefined && (newConfig.maxConcurrentPositions <= 0 || newConfig.maxConcurrentPositions > 10)) {
+      throw new Error('maxConcurrentPositions must be between 1 and 10');
+    }
     this.config = {
       ...this.config,
       ...newConfig

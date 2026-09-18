@@ -193,38 +193,66 @@ export class HybridExitSystem {
 
       if (activeExchange === 'BINANCE' && binanceClient.hasCredentials()) {
         const cleanSymbol = symbol.replace(/[-_]/g, '');
-        // Place stop/exit orders on Binance
+        // 1. Real STOP_MARKET protection with reduceOnly: true
         const slRes = await binanceClient.executeOrder(
           cleanSymbol,
           closeSide,
-          'LIMIT',
+          'STOP_MARKET',
           cleanQty,
-          slPrice
+          undefined,
+          {
+            stopPrice: slPrice,
+            workingType: 'MARK_PRICE',
+            reduceOnly: true
+          }
         );
         if (slRes.success && slRes.orderId) {
           slOrderId = slRes.orderId;
         }
 
+        // 2. Real Take-Profit LIMIT order with reduceOnly: true
         const tpRes = await binanceClient.executeOrder(
           cleanSymbol,
           closeSide,
           'LIMIT',
           cleanQty,
-          tpPrice
+          tpPrice,
+          {
+            reduceOnly: true,
+            timeInForce: 'GTC'
+          }
         );
         if (tpRes.success && tpRes.orderId) {
           tpOrderId = tpRes.orderId;
         }
       } else if (activeExchange === 'BYBIT' && bybitClient.hasCredentials()) {
+        // 1. Real Bybit conditional STOP order with reduceOnly: true
         const slRes = await bybitClient.placeRealOrder({
+          symbol,
+          side: closeSide === 'BUY' ? 'Buy' : 'Sell',
+          orderType: 'Market',
+          qty: cleanQty.toString(),
+          triggerPrice: slPrice.toString(),
+          triggerDirection: closeSide === 'BUY' ? 1 : 2,
+          triggerBy: 'MarkPrice',
+          orderFilter: 'StopOrder',
+          reduceOnly: true
+        });
+        if (slRes.success && slRes.orderId) {
+          slOrderId = slRes.orderId;
+        }
+
+        // 2. Real Bybit Take Profit LIMIT order with reduceOnly: true
+        const tpRes = await bybitClient.placeRealOrder({
           symbol,
           side: closeSide === 'BUY' ? 'Buy' : 'Sell',
           orderType: 'Limit',
           qty: cleanQty.toString(),
-          price: slPrice.toString()
+          price: tpPrice.toString(),
+          reduceOnly: true
         });
-        if (slRes.success && slRes.orderId) {
-          slOrderId = slRes.orderId;
+        if (tpRes.success && tpRes.orderId) {
+          tpOrderId = tpRes.orderId;
         }
       }
 

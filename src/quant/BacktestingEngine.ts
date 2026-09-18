@@ -15,6 +15,7 @@
 
 import { PerformanceMetrics, BacktestTradeRecord, PerformanceMetricsData } from './PerformanceMetrics';
 import { PointInTimeDatabase, Candle } from './PointInTimeDatabase';
+import { KalmanHedgeRatio } from './kalmanFilter';
 
 export interface BacktestConfig {
   symbol: string;
@@ -219,32 +220,28 @@ export class BacktestingEngine {
       quantity: number;
     } | null = null;
     
-    // نافذة لحساب Z-Score
-    const zWindow: number[] = [];
-    const Z_WINDOW_SIZE = 30;
+    // تهيئة مرشح كالمان لمطابقة المنطق الحي
+    const kalman = new KalmanHedgeRatio({ delta: 0.0001, ve: 0.001, vw: 0.001 });
+    const benchmarkBase = candles[0]?.close || 1.0;
     
     for (let i = 0; i < candles.length; i++) {
       const candle = candles[i];
       const price = candle.close;
       
-      // إضافة السعر إلى النافذة
-      zWindow.push(price);
-      if (zWindow.length > Z_WINDOW_SIZE) {
-        zWindow.shift();
-      }
+      // تحديث كالمان مقابل خط الأساس (الشموع أو المتوسط المتحرك التراكمي)
+      kalman.update(price, benchmarkBase);
+      const isCalibrated = kalman.getHistory().spread.length >= 10;
       
-      // حساب Z-Score فقط إذا كان لدينا بيانات كافية
-      if (zWindow.length < Z_WINDOW_SIZE) {
+      let zScore = isCalibrated ? kalman.getZScore(30) : 0.0;
+      if (!Number.isFinite(zScore)) {
+        zScore = 0.0;
+      }
+      zScore = Math.max(-8.0, Math.min(8.0, zScore));
+      
+      if (!isCalibrated) {
         equityCurve.push({ timestamp: candle.timestamp, equity: currentEquity });
         continue;
       }
-      
-      const mean = zWindow.reduce((sum, p) => sum + p, 0) / zWindow.length;
-      const std = Math.sqrt(
-        zWindow.reduce((sum, p) => sum + Math.pow(p - mean, 2), 0) / zWindow.length
-      );
-      
-      const zScore = std > 0 ? (price - mean) / std : 0;
       
       // منطق التداول
       if (!currentPosition) {
