@@ -33,24 +33,19 @@ export interface TradeableCheckResult {
 }
 
 export const INSTITUTIONAL_ALLOWED_COINS = [
-  'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
-  'AVAXUSDT', 'LINKUSDT', 'UNIUSDT', 'DOTUSDT',
-  'ADAUSDT', 'XRPUSDT', 'LTCUSDT', 'ATOMUSDT',
-  'NEARUSDT', 'SUIUSDT', 'APTUSDT', 'FETUSDT',
-  'ARBUSDT', 'OPUSDT', 'INJUSDT', 'TIAUSDT',
-  'RENDERUSDT', 'SEIUSDT', 'FTMUSDT', 'TONUSDT', 
-  'AAVEUSDT', 'DOGEUSDT', 'PEPEUSDT', 'SHIBUSDT',
-  'BONKUSDT', 'FLOKIUSDT', 'WIFUSDT', 'JASMYUSDT',
-  'GALAUSDT', 'NOTUSDT', 'TRXUSDT', 'ETCUSDT',
-  'ORDIUSDT', 'RUNEUSDT', 'WLDUSDT', 'BOMEUSDT',
-  'POPCATUSDT', 'MEWUSDT', 'ONDOUSDT', 'HBARUSDT'
+  'ETHUSDT', 'BTCUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT',
+  'ADAUSDT', 'AVAXUSDT', 'SUIUSDT', 'LINKUSDT', 'NEARUSDT', 'APTUSDT',
+  'PEPEUSDT', 'SHIBUSDT', 'POLUSDT', 'DOTUSDT', 'LTCUSDT', 'FETUSDT',
+  'ARBUSDT', 'OPUSDT', 'INJUSDT', 'TIAUSDT', 'RENDERUSDT', 'SEIUSDT',
+  'RUNEUSDT', 'WIFUSDT', 'FTMUSDT', 'ATOMUSDT', 'ETCUSDT', 'TRXUSDT',
+  'TONUSDT', 'ORDIUSDT', 'AAVEUSDT', 'UNIUSDT'
 ];
 
 export class SanityChecks {
   public static readonly MAX_Z_SCORE_CIRCUIT_BREAKER = 15.0;
   public static readonly MAX_Z_SCORE_TRADEABLE = 5.5; // Increased from 4.0
-  public static readonly MIN_HALF_LIFE = 30.0;        // Decreased from 60.0
-  public static readonly MAX_HALF_LIFE = 3600.0;      // Increased from 1800.0
+  public static readonly MIN_HALF_LIFE = 0.5;         // High-frequency instant arbitrage minimum (0.5 sec)
+  public static readonly MAX_HALF_LIFE = 60.0;        // Max 60 seconds fast mean-reversion
   public static readonly MIN_VOLUME_USD = 10_000_000.0; // Consistent with server.ts
   public static readonly MAX_SPREAD_PERCENT = 0.0050; // 0.50% Consistent with server.ts
 
@@ -118,6 +113,23 @@ export class SafeCoinFilter {
     this.stablecoins = new Set(DEFAULT_STABLECOINS);
     this.blacklisted = new Set(config.blacklist || []);
     this.whitelisted = new Set(config.whitelist || INSTITUTIONAL_ALLOWED_COINS);
+  }
+
+  public addCustomCoin(symbol: string): void {
+    const formatted = symbol.trim().toUpperCase().replace(/[-_]/g, '');
+    const fullSym = formatted.endsWith('USDT') ? formatted : `${formatted}USDT`;
+    this.whitelisted.add(fullSym);
+    this.blacklisted.delete(fullSym);
+  }
+
+  public removeCustomCoin(symbol: string): void {
+    const formatted = symbol.trim().toUpperCase().replace(/[-_]/g, '');
+    const fullSym = formatted.endsWith('USDT') ? formatted : `${formatted}USDT`;
+    this.whitelisted.delete(fullSym);
+  }
+
+  public getWhitelistedCoins(): string[] {
+    return Array.from(this.whitelisted);
   }
 
   public isStablecoin(symbol: string): boolean {

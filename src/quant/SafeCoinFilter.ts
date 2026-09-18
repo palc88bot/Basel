@@ -32,6 +32,7 @@ export class SafeCoinFilter {
   private maxSpreadPct: number;
   private maxAbsZScore: number;
   private blacklisted: Set<string>;
+  private whitelisted: Set<string>;
   private stablecoins: Set<string>;
 
   constructor(config: CoinFilterConfig = {}) {
@@ -40,7 +41,31 @@ export class SafeCoinFilter {
     this.maxAbsZScore = config.maxAbsZScore ?? 5.5;
 
     this.blacklisted = new Set([...ABSOLUTE_BLACKLIST, ...(config.blacklist || [])]);
+    this.whitelisted = new Set(config.whitelist || []);
     this.stablecoins = new Set(DEFAULT_STABLECOIN_BASES);
+  }
+
+  public addCustomCoin(symbol: string): void {
+    const formatted = symbol.trim().toUpperCase().replace(/[-_]/g, '');
+    const fullSym = formatted.endsWith('USDT') ? formatted : `${formatted}USDT`;
+    this.whitelisted.add(fullSym);
+    this.blacklisted.delete(fullSym);
+  }
+
+  public removeCustomCoin(symbol: string): void {
+    const formatted = symbol.trim().toUpperCase().replace(/[-_]/g, '');
+    const fullSym = formatted.endsWith('USDT') ? formatted : `${formatted}USDT`;
+    this.whitelisted.delete(fullSym);
+  }
+
+  public getWhitelistedCoins(): string[] {
+    return Array.from(this.whitelisted);
+  }
+
+  public isWhitelisted(symbol: string): boolean {
+    const formatted = symbol.trim().toUpperCase().replace(/[-_]/g, '');
+    const fullSym = formatted.endsWith('USDT') ? formatted : `${formatted}USDT`;
+    return this.whitelisted.has(fullSym);
   }
 
   public isStablecoin(symbol: string): boolean {

@@ -187,7 +187,7 @@ export const ExecutionEngineView: React.FC<ExecutionEngineViewProps> = ({ wallet
             <div className="flex items-center space-x-2 space-x-reverse mb-1">
               <Zap className="w-5 h-5 text-cyan-400" />
               <h1 className="text-lg font-bold text-white">
-                محرك التنفيذ الفعلي ومطابقة Bybit المدمج (Hummingbot & Reconciliation Core)
+                محرك التنفيذ الفعلي والمطابقة المدمج (Hummingbot & Reconciliation Core)
               </h1>
               <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-mono">
                 Direct In-Memory Core
@@ -230,7 +230,7 @@ export const ExecutionEngineView: React.FC<ExecutionEngineViewProps> = ({ wallet
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
           </div>
           <div className="text-white font-bold text-sm font-mono">
-            {telemetry?.executor?.connectorName || 'bybit_perpetual'}
+            {(telemetry?.reconciliation?.lastSnapshot as any)?.exchangeName || telemetry?.executor?.connectorName || 'Binance / Bybit'}
           </div>
           <div className="flex items-center justify-between text-[11px] text-slate-400 font-sans">
             <span>الشبكة: {telemetry?.executor?.testnet ? 'Testnet آمن' : 'إنتاج حي'}</span>
@@ -242,7 +242,9 @@ export const ExecutionEngineView: React.FC<ExecutionEngineViewProps> = ({ wallet
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-xs text-slate-400 font-sans">2. حماية الـ Rate Limit</span>
-            <span className="text-[10px] bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded font-mono">Bybit V5</span>
+            <span className="text-[10px] bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded font-mono">
+              {(telemetry?.reconciliation?.lastSnapshot as any)?.exchangeName || 'API Limiter'}
+            </span>
           </div>
           <div className="text-white font-bold text-sm font-mono">
             هامش أمان: {telemetry?.adaptiveMetrics?.safetyMarginPct ?? 80}%
@@ -299,7 +301,7 @@ export const ExecutionEngineView: React.FC<ExecutionEngineViewProps> = ({ wallet
         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
           <div className="flex items-center space-x-2 space-x-reverse">
             <ShieldCheck className="w-4 h-4 text-cyan-400" />
-            <h2 className="text-sm font-bold text-white">سعة نقاط اتصال Bybit V5 والحدود المتكيفة (Rate Limits)</h2>
+            <h2 className="text-sm font-bold text-white">سعة نقاط اتصال المنصة والحدود المتكيفة (Rate Limits)</h2>
           </div>
           <span className="text-xs text-slate-400 font-mono">محمي من حظر الـ IP أو رفض الأوامر</span>
         </div>
@@ -384,7 +386,7 @@ export const ExecutionEngineView: React.FC<ExecutionEngineViewProps> = ({ wallet
             <h2 className="text-sm font-bold text-white">مطابقة الأرصدة الشاملة للـ APIs الربط (Multi-API Balance Audit)</h2>
           </div>
           <span className="text-xs text-slate-400 font-mono">
-            المنصة النشطة: <span className="text-amber-400 font-bold">{telemetry?.reconciliation?.lastSnapshot?.exchangeName || 'Binance / Bybit'}</span>
+            المنصة النشطة: <span className="text-amber-400 font-bold">{(telemetry?.reconciliation?.lastSnapshot as any)?.exchangeName || 'Binance / Bybit'}</span>
           </span>
         </div>
 
@@ -397,7 +399,7 @@ export const ExecutionEngineView: React.FC<ExecutionEngineViewProps> = ({ wallet
             </span>
           </div>
           <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-mono">
-            {telemetry?.reconciliation?.lastSnapshot?.verified ? 'تم التحقق والمطابقة ✅' : 'في انتظار ربط API ورصيد'}
+            {(telemetry?.reconciliation?.lastSnapshot as any)?.verified ? 'تم التحقق والمطابقة ✅' : 'في انتظار ربط API ورصيد'}
           </span>
         </div>
 

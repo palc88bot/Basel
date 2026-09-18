@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, Cpu, ShieldAlert, BarChart3, Bot, Terminal, Zap, Layers, Bell, Sliders, TrendingUp, DollarSign, Heart, ShieldCheck, Key, Award, Wifi, WifiOff, RefreshCw } from 'lucide-react';
+import { Activity, Cpu, ShieldAlert, BarChart3, Bot, Terminal, Zap, Layers, Bell, Sliders, TrendingUp, DollarSign, Heart, ShieldCheck, Key, Award, Wifi, WifiOff, RefreshCw, Brain, FlaskConical } from 'lucide-react';
 
 interface NavbarProps {
   activeTab: string;
@@ -9,6 +9,9 @@ interface NavbarProps {
   equity: number;
   dailyPnl: number;
   walletBalance: number;
+  isPaperTrading?: boolean;
+  onTogglePaperTrading?: () => void;
+  paperBalance?: number;
   wsStatus?: {
     status: 'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED' | 'FAILED';
     exchangeName?: string;
@@ -25,6 +28,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   equity,
   dailyPnl,
   walletBalance,
+  isPaperTrading = true,
+  onTogglePaperTrading,
+  paperBalance = 1000,
   wsStatus = { status: 'CONNECTED', exchangeName: 'Universal Multi-Exchange' },
   onRecoverState
 }) => {
@@ -52,41 +58,33 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           </div>
 
-          {/* WebSocket Status Indicator Badge */}
-          <div className="hidden sm:flex items-center space-x-2 space-x-reverse px-3 py-1.5 rounded-xl border text-xs font-mono font-medium transition-all shadow-sm ${
-            wsStatus.status === 'CONNECTED'
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-              : wsStatus.status === 'RECONNECTING'
-              ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 animate-pulse'
-              : 'bg-rose-500/10 border-rose-500/30 text-rose-300 animate-bounce'
-          }">
-            {wsStatus.status === 'CONNECTED' ? (
-              <span className="flex items-center space-x-1.5 space-x-reverse text-emerald-400">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-                <Wifi className="w-3.5 h-3.5" />
-                <span className="font-sans font-semibold">متصل مباشر</span>
-              </span>
-            ) : wsStatus.status === 'RECONNECTING' ? (
-              <span className="flex items-center space-x-1.5 space-x-reverse text-amber-400">
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                <span className="font-sans font-semibold">إعادة اتصال (Backoff)...</span>
-              </span>
-            ) : (
-              <span className="flex items-center space-x-1.5 space-x-reverse text-rose-400">
-                <WifiOff className="w-3.5 h-3.5" />
-                <span className="font-sans font-semibold">انقطاع الاتصال</span>
-              </span>
+          {/* Paper Trading Mode Badge & Toggle */}
+          <div className="hidden sm:flex items-center space-x-2 space-x-reverse">
+            {onTogglePaperTrading && (
+              <button
+                onClick={onTogglePaperTrading}
+                className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center space-x-1.5 space-x-reverse transition-all shadow-sm ${
+                  isPaperTrading
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25'
+                    : 'bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25'
+                }`}
+                title={isPaperTrading ? 'البوت في وضع التداول الافتراضي الآمن (Testnet). اضغط للتحويل للتداول الحي.' : 'البوت في وضع التداول الحقيقي (Live). اضغط للتحويل للتداول الافتراضي.'}
+              >
+                <FlaskConical className={`w-3.5 h-3.5 ${isPaperTrading ? 'text-emerald-400' : 'text-amber-400'}`} />
+                <span>{isPaperTrading ? '🧪 تداول افتراضي (Testnet)' : '⚡ تداول حقيقي (Live)'}</span>
+              </button>
             )}
-            <span className="text-[10px] text-slate-400 border-r border-slate-700/80 pr-2 mr-2 max-w-[130px] truncate hidden md:inline">
-              {wsStatus.exchangeName || 'Universal API'}
-            </span>
           </div>
 
           {/* Quick Metrics & Pulse */}
           <div className="hidden lg:flex items-center space-x-5 space-x-reverse bg-slate-950/70 px-4 py-2 rounded-xl border border-slate-800 font-mono text-xs">
             <div>
-              <span className="text-slate-400 block text-[10px] font-sans">المحفظة المرصودة</span>
-              <span className="text-white font-bold text-sm">${walletBalance.toFixed(2)}</span>
+              <span className="text-slate-400 block text-[10px] font-sans">
+                {isPaperTrading ? 'الرصيد الافتراضي' : 'المحفظة المرصودة'}
+              </span>
+              <span className="text-white font-bold text-sm">
+                ${isPaperTrading ? paperBalance.toFixed(2) : walletBalance.toFixed(2)}
+              </span>
             </div>
             <div className="border-r border-slate-800 pr-4">
               <span className="text-slate-400 block text-[10px] font-sans">الربح اليومي المحقق</span>
@@ -133,10 +131,10 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="flex space-x-1 space-x-reverse overflow-x-auto py-2 border-t border-slate-800/80 no-scrollbar">
           {[
             { id: 'dashboard', label: 'لوحة النبض والقيادة', icon: Activity },
-            { id: 'futures', label: 'ماسح عملات الفيوتشرز الشامل', icon: TrendingUp },
+            { id: 'paper', label: 'التداول الافتراضي وسجل النتائج (Paper Trading)', icon: FlaskConical },
             { id: 'vault', label: 'خزنة الأسرار وربط الـ API', icon: Key },
             { id: 'alerts', label: 'التنبيهات وتيليجرام', icon: Bell },
-            { id: 'copilot', label: 'المستشار الذكي Gemini', icon: Sliders },
+            { id: 'copilot', label: 'عقل OMEGA والشات الموحد', icon: Brain },
           ].map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;

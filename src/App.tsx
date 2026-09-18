@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
-import { FuturesTop10View } from './components/FuturesTop10View';
 import { CapitalAdaptationView } from './components/CapitalAdaptationView';
 import { VisualStrategyDesignerView } from './components/VisualStrategyDesignerView';
 import { TentaclesManagerView } from './components/TentaclesManagerView';
@@ -14,6 +13,7 @@ import { GeminiQuantCopilot } from './components/GeminiQuantCopilot';
 import { ExecutionEngineView } from './components/ExecutionEngineView';
 import { SecretVaultView } from './components/SecretVaultView';
 import { OmegaQuantSuiteView } from './components/OmegaQuantSuiteView';
+import { PaperTradingManagerView } from './components/PaperTradingManagerView';
 import { MarketTick, Position, BotConfig } from './types';
 import {
   SmartPairSelector,
@@ -22,10 +22,57 @@ import {
   INSTITUTIONAL_ALLOWED_COINS
 } from './quant';
 
+/**
+ * Robust Ornstein-Uhlenbeck Half-Life calculation using Ordinary Least Squares (OLS) regression
+ * on rolling price window history.
+ */
+function calculateHalfLife(priceSeries: number[], sampleIntervalSec: number = 5): number {
+  try {
+    if (!Array.isArray(priceSeries) || priceSeries.length < 10) return 0;
+    const clean = priceSeries.filter(v => typeof v === 'number' && !isNaN(v) && isFinite(v));
+    if (clean.length < 10) return 0;
+
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+    const n = clean.length - 1;
+
+    for (let i = 0; i < n; i++) {
+      const x = clean[i];
+      const y = clean[i + 1] - clean[i];
+      if (isFinite(x) && isFinite(y)) {
+        sumX += x;
+        sumY += y;
+        sumXY += x * y;
+        sumX2 += x * x;
+      }
+    }
+
+    const denominator = n * sumX2 - sumX * sumX;
+    if (Math.abs(denominator) < 1e-12 || !isFinite(denominator)) return 0;
+
+    const lambda = (n * sumXY - sumX * sumY) / denominator;
+    if (!isFinite(lambda) || lambda >= 0) return 0; // Must be negative for mean reversion
+
+    const periods = -Math.log(2) / lambda;
+    if (!isFinite(periods) || periods <= 0) return 0;
+
+    const halfLifeSec = periods * sampleIntervalSec;
+    if (!isFinite(halfLifeSec) || halfLifeSec <= 0 || halfLifeSec > 86400) return 0;
+
+    return Math.round(halfLifeSec);
+  } catch (err) {
+    console.error('[App] OLS Half-Life calculation error:', err);
+    return 0;
+  }
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [botRunning, setBotRunning] = useState(true);
   
+  // Paper Trading State
+  const [isPaperTrading, setIsPaperTrading] = useState(true);
+  const [paperBalance, setPaperBalance] = useState(1000.0);
+
   // Real Wallet Balance from Bybit V5 (defaults to 0.00 until authenticated)
   const [walletBalance, setWalletBalance] = useState(0.0);
   const [equity, setEquity] = useState(0.0);
@@ -55,9 +102,9 @@ export default function App() {
     kalmanDelta: 0.001,
     kalmanVe: 0.001,
     kalmanVw: 0.001,
-    minHalfLife: 60,
-    maxHalfLife: 1800,
-    entryZ: 1.8,
+    minHalfLife: 0.5,
+    maxHalfLife: 60,
+    entryZ: 2.0,
     exitZ: 0.0,
     stopZ: 2.8,
     minConfidence: 0.7,
@@ -95,21 +142,48 @@ export default function App() {
     }
   };
 
+  const handleTogglePaperTrading = async (active?: boolean) => {
+    try {
+      const targetState = active !== undefined ? active : !isPaperTrading;
+      const res = await fetch('/api/paper/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: targetState })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setIsPaperTrading(data.isPaperTrading);
+        if (data.paperBalance) setPaperBalance(data.paperBalance);
+      }
+    } catch (err) {
+      console.error('Failed to toggle paper trading mode:', err);
+    }
+  };
+
   // Fetch Platform Config & Universal Account State
   const fetchUniversalState = async () => {
     try {
-      const [configRes, accRes, posRes, futuresRes, engineRes] = await Promise.all([
+      const [configRes, accRes, posRes, futuresRes, engineRes, paperRes] = await Promise.all([
         fetch('/api/exchange/platform-config'),
         fetch('/api/exchange/account'),
         fetch('/api/exchange/positions'),
         fetch('/api/quant/futures-pairs'),
-        fetch('/api/execution/auto-engine')
+        fetch('/api/execution/auto-engine'),
+        fetch('/api/paper/mode').catch(() => null)
       ]);
       const configData = await configRes.json();
       const accData = await accRes.json();
       const posData = await posRes.json();
       const futuresData = await futuresRes.json();
       const engineData = await engineRes.json().catch(() => ({ success: false }));
+      const paperData = paperRes ? await paperRes.json().catch(() => ({ success: false })) : null;
+
+      if (paperData && paperData.success) {
+        setIsPaperTrading(paperData.isPaperTrading);
+        if (typeof paperData.paperBalance === 'number') {
+          setPaperBalance(paperData.paperBalance);
+        }
+      }
 
       if (configData.success) {
         setPlatformConfig(configData.config);
@@ -328,35 +402,19 @@ export default function App() {
             let halfLife = 0;
 
             try {
-              // 2. Maintain Dynamic Rolling Window Price History (Persistent Look-back Buffer: 120+ ticks)
-              const hist = rollingPriceHistoryRef.current.get(symbol) || [];
-              hist.push(currentPrice);
-              if (hist.length > 120) {
-                hist.shift();
-              }
-              rollingPriceHistoryRef.current.set(symbol, hist);
-
-              // 3. Compute Rolling Z-Score derived from persistent look-back buffer with NaN/Inf checks
-              if (hist.length >= 8) {
-                const mean = hist.reduce((acc, val) => acc + val, 0) / hist.length;
-                const variance = hist.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / (hist.length - 1);
-                const stdDev = Math.sqrt(variance);
-                if (isFinite(stdDev) && stdDev > 1e-6) {
-                  rollingZ = (currentPrice - mean) / stdDev;
-                }
-              } else if (typeof p.zScore === 'number' && !isNaN(p.zScore) && isFinite(p.zScore)) {
+              // 2. Use directly the values provided by the backend API 
+              // which are calibrated by Kalman Filter and SmartPairSelector
+              if (typeof p.zScore === 'number' && !isNaN(p.zScore) && isFinite(p.zScore)) {
                 rollingZ = p.zScore;
               }
 
-              // 4. Compute Ornstein-Uhlenbeck Half-Life using OLS regression on persistent history buffer
+              // 3. Compute Ornstein-Uhlenbeck Half-Life using OLS regression
               const serverHalfLife = typeof p.halfLifeSec === 'number' && !isNaN(p.halfLifeSec) && p.halfLifeSec > 0
                 ? p.halfLifeSec
                 : (typeof p.halfLife === 'number' && !isNaN(p.halfLife) && p.halfLife > 0 ? p.halfLife : 0);
 
-              if (serverHalfLife > 0 && SanityChecks.validateHalfLife(serverHalfLife)) {
+              if (serverHalfLife > 0) {
                 halfLife = serverHalfLife;
-              } else if (hist.length >= 10) {
-                halfLife = smartSelector.calculateHalfLife(hist, 5);
               }
             } catch (mathErr) {
               console.error(`[App] Mathematical error in Z-Score/Half-Life calculation for ${symbol}:`, mathErr);
@@ -444,12 +502,12 @@ export default function App() {
               continue;
             }
 
-            // 9. Mean-Reversion Half-Life Speed Verification (60s - 1800s)
+            // 9. Fast Instant Arbitrage Mean-Reversion Half-Life Speed Verification (0.5s - 60s)
             if (!SanityChecks.validateHalfLife(halfLife)) {
               evaluatedCoins.push({
                 symbol,
                 status: 'REJECTED',
-                reason: `سرعة ارتداد غير مستقرة (Half-Life=${Math.round(halfLife)}s خارج النطاق 60-1800s)`,
+                reason: `سرعة ارتداد غير مستقرة (Half-Life=${Math.round(halfLife)}s خارج نطاق التحكيم اللحظي 0.5s-60s)`,
                 zScore,
                 volume: volumeUsd,
                 halfLife
@@ -607,6 +665,9 @@ export default function App() {
         equity={equity}
         dailyPnl={dailyPnl}
         walletBalance={walletBalance}
+        isPaperTrading={isPaperTrading}
+        onTogglePaperTrading={handleTogglePaperTrading}
+        paperBalance={paperBalance}
         wsStatus={wsStatus}
         onRecoverState={handleRecoverState}
       />
@@ -626,14 +687,30 @@ export default function App() {
             onNavigateTab={setActiveTab}
           />
         )}
-        {activeTab === 'futures' && (
-          <FuturesTop10View walletBalance={walletBalance} />
+        {activeTab === 'paper' && (
+          <PaperTradingManagerView
+            isPaperTrading={isPaperTrading}
+            onTogglePaperTrading={(active) => {
+              setIsPaperTrading(active);
+              fetchUniversalState();
+            }}
+            botRunning={botRunning}
+          />
         )}
         {activeTab === 'vault' && (
           <SecretVaultView onCredentialsUpdated={fetchRealBybitState} />
         )}
         {activeTab === 'alerts' && <AlertsManagerView />}
-        {activeTab === 'copilot' && <GeminiQuantCopilot />}
+        {activeTab === 'copilot' && (
+          <GeminiQuantCopilot
+            botRunning={botRunning}
+            walletBalance={walletBalance}
+            equity={equity}
+            dailyPnl={dailyPnl}
+            positionsCount={positions.length}
+            creatorEmail="pal.c88@gmail.com"
+          />
+        )}
       </main>
 
       <footer className="bg-slate-900/90 border-t border-slate-800 text-xs text-slate-400 py-4 text-center font-sans">

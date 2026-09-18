@@ -46,9 +46,12 @@ export interface StoredTrade {
 
 export interface BotStateSchema {
   isAutoEngineActive: boolean;
+  isPaperTrading: boolean;
+  paperBalance: number;
   activePositions: Record<string, ActivePosition>;
   openOrders: Record<string, OpenOrder>;
   tradeHistory: StoredTrade[];
+  paperTradeHistory: StoredTrade[];
   zScores: Record<string, number>;
   circuitBreakers: CircuitBreakerState;
   lastPrices: Record<string, number>;
@@ -86,9 +89,12 @@ export class StateDatabase {
 
     return {
       isAutoEngineActive: true,
+      isPaperTrading: true,
+      paperBalance: 1000.0,
       activePositions: {},
       openOrders: {},
       tradeHistory: [],
+      paperTradeHistory: [],
       zScores: {},
       circuitBreakers: {
         dailyLoss: 0.0,
@@ -100,6 +106,43 @@ export class StateDatabase {
       lastPrices: {},
       lastUpdated: new Date().toISOString()
     };
+  }
+
+  public setPaperTrading(active: boolean): void {
+    this.state.isPaperTrading = active;
+    this.saveState();
+  }
+
+  public getPaperTrading(): boolean {
+    return this.state.isPaperTrading !== undefined ? this.state.isPaperTrading : true;
+  }
+
+  public setPaperBalance(balance: number): void {
+    this.state.paperBalance = balance;
+    this.saveState();
+  }
+
+  public getPaperBalance(): number {
+    return this.state.paperBalance !== undefined ? this.state.paperBalance : 1000.0;
+  }
+
+  public recordPaperTrade(trade: StoredTrade): void {
+    if (!this.state.paperTradeHistory) this.state.paperTradeHistory = [];
+    this.state.paperTradeHistory.unshift(trade);
+    if (this.state.paperTradeHistory.length > 300) {
+      this.state.paperTradeHistory = this.state.paperTradeHistory.slice(0, 300);
+    }
+    this.saveState();
+  }
+
+  public getPaperTradeHistory(limit: number = 50): StoredTrade[] {
+    if (!this.state.paperTradeHistory) this.state.paperTradeHistory = [];
+    return this.state.paperTradeHistory.slice(0, limit);
+  }
+
+  public clearPaperTradeHistory(): void {
+    this.state.paperTradeHistory = [];
+    this.saveState();
   }
 
   public setAutoEngineActive(active: boolean): void {

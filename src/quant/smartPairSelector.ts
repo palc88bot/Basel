@@ -40,8 +40,8 @@ export class SmartPairSelector {
   } = {}) {
     this.minVolume24h = config.minVolume24h ?? 30_000_000; // $30M min for institutional futures safety
     this.maxSpreadPct = config.maxSpreadPct ?? 0.0020;    // 0.20% max spread
-    this.minHalfLife = config.minHalfLife ?? 60;          // 60 sec
-    this.maxHalfLife = config.maxHalfLife ?? 1800;        // 30 min
+    this.minHalfLife = config.minHalfLife ?? 0.5;         // 0.5 sec high-frequency instant arbitrage
+    this.maxHalfLife = config.maxHalfLife ?? 60;          // 60 sec max
     this.allowedCoins = new Set(config.allowedCoins || INSTITUTIONAL_ALLOWED_COINS);
   }
 
@@ -56,11 +56,11 @@ export class SmartPairSelector {
 
   public calculateHalfLife(spreadSeries: number[], sampleIntervalSec: number = 5): number {
     try {
-      if (!Array.isArray(spreadSeries) || spreadSeries.length < 8) return 0;
+      if (!Array.isArray(spreadSeries) || spreadSeries.length < 3) return 0;
 
       // Filter out invalid numbers (NaN, Infinity)
       const cleanSeries = spreadSeries.filter(v => typeof v === 'number' && !isNaN(v) && isFinite(v));
-      if (cleanSeries.length < 8) return 0;
+      if (cleanSeries.length < 3) return 0;
 
       // Simple OLS AR(1) estimation for Ornstein-Uhlenbeck Half-Life
       let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;

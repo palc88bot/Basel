@@ -221,7 +221,7 @@ export class BacktestingEngine {
     } | null = null;
     
     // تهيئة مرشح كالمان لمطابقة المنطق الحي
-    const kalman = new KalmanHedgeRatio({ delta: 0.0001, ve: 0.001, vw: 0.001 });
+    const kalman = new KalmanHedgeRatio({ delta: 0.0001, ve: 0.001, vw: 0.0001 });
     const benchmarkBase = candles[0]?.close || 1.0;
     
     for (let i = 0; i < candles.length; i++) {

@@ -76,6 +76,15 @@ export class CircuitBreakersManager {
     this.consecutiveLosses = 0;
   }
 
+  public reset(initialEquity?: number): void {
+    this.isHalted = false;
+    this.haltReason = '';
+    this.consecutiveLosses = 0;
+    if (typeof initialEquity === 'number' && initialEquity > 0) {
+      this.dailyStartEquity = initialEquity;
+    }
+  }
+
   public getStatus(): { isHalted: boolean; haltReason: string; consecutiveLosses: number } {
     return {
       isHalted: this.isHalted,

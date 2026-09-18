@@ -69,3 +69,4 @@
 .animate-signal-wave {
   animation: signal-wave 2.8s infinite ease-in-out;
 }
+@plugin "@tailwindcss/typography";

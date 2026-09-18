@@ -10,6 +10,7 @@ export interface MarketTick {
   lstmNeutral: number;
   lstmDown: number;
   confidence: number;
+  volatility?: number;
 }
 
 export interface Position {
@@ -280,3 +281,55 @@ export interface VaultPublicStatus {
   maskedPreview: Record<string, string>;
   lastUpdated: string | null;
 }
+
+export interface PaperTradeRecord {
+  tradeId: string;
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  entryTime: number;
+  entryPrice: number;
+  quantity: number;
+  exitTime: number | null;
+  exitPrice: number | null;
+  grossPnl: number;
+  fees: number;
+  fundingCost: number;
+  slippage: number;
+  netPnl: number;
+  netPnlPct: number;
+  reason: 'TP' | 'SL' | 'TIME' | 'MANUAL' | 'SIGNAL' | null;
+  duration: number | null;
+}
+
+export interface PaperPositionRecord {
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  quantity: number;
+  entryPrice: number;
+  currentPrice: number;
+  unrealizedPnl: number;
+  unrealizedPnlPct: number;
+  entryTime: number;
+  leverage: number;
+  margin: number;
+}
+
+export interface PaperStatsSummary {
+  balance: number;
+  initialBalance: number;
+  totalPnl: number;
+  totalPnlPct: number;
+  totalTrades: number;
+  winningTrades: number;
+  losingTrades: number;
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  profitFactor: number;
+  totalFees: number;
+  totalFundingCost: number;
+  totalSlippage: number;
+  maxDrawdown: number;
+  openPositions: number;
+}
+

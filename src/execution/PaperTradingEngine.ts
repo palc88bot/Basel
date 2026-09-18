@@ -666,6 +666,35 @@ export class PaperTradingEngine {
     return order;
   }
 
+  reset(newInitialBalance?: number): void {
+    if (newInitialBalance !== undefined && newInitialBalance > 0) {
+      this.config.initialBalance = newInitialBalance;
+    }
+    this.balance = this.config.initialBalance;
+    this.peakBalance = this.balance;
+    this.maxDrawdown = 0;
+    this.totalTrades = 0;
+    this.winningTrades = 0;
+    this.losingTrades = 0;
+    this.totalFees = 0;
+    this.totalFundingCost = 0;
+    this.totalSlippage = 0;
+    this.orders.clear();
+    this.positions.clear();
+    this.tradeHistory = [];
+    this.circuitBreakers.reset();
+    console.log(`🔄 PaperTradingEngine reset with balance: $${this.balance}`);
+  }
+
+  setBalance(amount: number): void {
+    if (amount > 0) {
+      this.balance = amount;
+      if (this.balance > this.peakBalance) {
+        this.peakBalance = this.balance;
+      }
+    }
+  }
+
   // ==================== Getters ====================
 
   getBalance(): number {

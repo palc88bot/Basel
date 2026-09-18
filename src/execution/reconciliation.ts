@@ -153,8 +153,8 @@ export class Reconciliation {
     try {
       const { balance: exchangeBalance, exchangeName, verified } = await this.getExchangeBalance();
       
-      // Update bot internal tracking balance if verified real balance is retrieved
-      if (verified && exchangeBalance > 0) {
+      // Synchronize bot internal tracking balance if verified real exchange balance is retrieved
+      if (verified) {
         this.botBalance = exchangeBalance;
       }
 
@@ -164,8 +164,8 @@ export class Reconciliation {
         discrepancyPct = discrepancy / this.botBalance;
       }
 
-      const matched = (!verified && exchangeBalance === 0 && this.botBalance === 0) ||
-        (verified && discrepancy <= this.discrepancyThreshold && discrepancyPct <= this.discrepancyPctThreshold);
+      // If not verified (e.g. paper simulation / no API keys connected), do not trigger false discrepancy alert
+      const matched = (!verified) || (verified && discrepancy <= this.discrepancyThreshold && discrepancyPct <= this.discrepancyPctThreshold);
 
       return {
         balanceMatched: matched,

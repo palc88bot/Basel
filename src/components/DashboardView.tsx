@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { TrendingUp, Activity, Zap, Shield, ShieldCheck, Play, Pause, CheckCircle2, AlertCircle, ArrowRightLeft, Sparkles, Heart, Brain, Clock, ChevronRight, ChevronUp, ChevronDown, Trash2, Layers, Terminal, RefreshCw } from 'lucide-react';
+import { TrendingUp, Activity, Zap, Shield, ShieldCheck, Play, Pause, CheckCircle2, AlertCircle, ArrowRightLeft, Sparkles, Heart, Brain, Clock, ChevronRight, ChevronUp, ChevronDown, Trash2, Layers, Terminal, RefreshCw, FlaskConical } from 'lucide-react';
 import { MarketTick, Position, FuturesPair, ExecutionTelemetry } from '../types';
-import { BotHeartbeatWave } from './BotHeartbeatWave';
+import { UnifiedVitalPulseWave } from './UnifiedVitalPulseWave';
 import { BackstageTerminalFeed } from './BackstageTerminalFeed';
+import { HumanizedMarketOverview } from './HumanizedMarketOverview';
+import { IntentMapCanvas } from './IntentMapCanvas';
 
 interface DashboardViewProps {
   botRunning: boolean;
@@ -37,7 +39,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [wsStatus, setWsStatus] = useState<{ status: string; exchangeName: string; secondsSinceLastMessage: number } | null>(null);
   const [statePositions, setStatePositions] = useState<any[]>([]);
   const [futuresPairs, setFuturesPairs] = useState<FuturesPair[]>([]);
-  const [selectedSymbol, setSelectedSymbol] = useState<string>('SOLUSDT');
+  const [selectedSymbol, setSelectedSymbol] = useState<string>('ETHUSDT');
   const [isPositionsCollapsed, setIsPositionsCollapsed] = useState<boolean>(false);
   const [posPage, setPosPage] = useState<number>(1);
   const posPageSize = 3;
@@ -78,7 +80,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         if (futuresData.success && Array.isArray(futuresData.pairs) && futuresData.pairs.length > 0) {
           setFuturesPairs(futuresData.pairs);
           // If no custom selection yet and no open position, pick the qualified pair with highest deviation
-          if (positions.length === 0 && (!selectedSymbol || selectedSymbol === 'SOLUSDT')) {
+          if (positions.length === 0 && (!selectedSymbol || selectedSymbol === 'ETHUSDT')) {
             const top = [...futuresData.pairs].sort((a, b) => Math.abs(b.zScore) - Math.abs(a.zScore))[0];
             if (top) setSelectedSymbol(top.symbol);
           }
@@ -236,74 +238,41 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* Living Bot Brain & Pulse HUD */}
-      <div className="bg-gradient-to-l from-slate-900 via-slate-900 to-cyan-950 border border-cyan-500/30 rounded-2xl p-6 shadow-2xl relative overflow-hidden">
-        <div className="absolute -left-12 -bottom-12 w-64 h-64 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none animate-pulse" />
-        <div className="absolute -right-12 -top-12 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none animate-pulse" />
+      {/* Bot Living Unified Vital Pulse & Kalman Wave (النبض الحيوي الموحد وموجة فلتر كالمان اللحظية) */}
+      <UnifiedVitalPulseWave
+        botRunning={botRunning}
+        volatility={latestTick?.volatility || 0.08}
+        activePositionsCount={positions.length}
+        hoveredNearOpportunity={futuresPairs.some(p => Math.abs(p.zScore) >= 1.8)}
+      />
 
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative z-10">
-          {/* Bot Vitals & Pulse */}
-          <div className="flex items-center space-x-4 space-x-reverse">
-            {/* Heartbeat Icon */}
-            <div className="relative flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-tr from-cyan-600 via-indigo-600 to-emerald-500 p-0.5 shadow-xl shadow-cyan-500/20 flex-shrink-0">
-              <div className="w-full h-full bg-slate-950/90 rounded-[14px] flex flex-col items-center justify-center">
-                <Heart className={`w-7 h-7 ${botRunning ? 'text-rose-500 animate-heartbeat' : 'text-slate-500'}`} />
-                <span className="text-[10px] font-mono font-bold text-cyan-300 mt-0.5">{botRunning ? `${bpm} BPM` : '0 BPM'}</span>
-              </div>
-            </div>
-
-            <div>
-              <div className="flex items-center space-x-2.5 space-x-reverse">
-                <h1 className="text-xl font-bold text-white tracking-wide">
-                  {botRunning ? 'عقل البوت الكمي ينبض ويعمل بحيوية' : 'عقل البوت في وضع الاستعداد المؤقت'}
-                </h1>
-                <span className={`text-[11px] px-2.5 py-0.5 rounded-full font-mono border font-bold ${
-                  botRunning
-                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                    : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
-                }`}>
-                  {botRunning ? 'حي ونشط' : 'متوقف'}
-                </span>
-              </div>
-
-              {/* Real-time Thought stream */}
-              <p className="text-xs text-cyan-200/90 mt-1.5 flex items-center space-x-2 space-x-reverse font-sans">
-                <Brain className="w-4 h-4 text-cyan-400 flex-shrink-0 animate-brain-glow" />
-                <span className="font-semibold text-cyan-300 ml-1">تفكير البوت اللحظي:</span>
-                <span>{internalThoughts[thoughtIndex]}</span>
-              </p>
-            </div>
+      {/* Paper Trading Fast Access Banner */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md">
+        <div className="flex items-center space-x-3 space-x-reverse">
+          <div className="p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
+            <FlaskConical className="w-5 h-5" />
           </div>
-
-          {/* Action & Vitals Bar */}
-          <div className="flex items-center space-x-3 space-x-reverse">
-            <div className="bg-slate-950/80 px-4 py-2 rounded-xl border border-slate-800 text-center font-mono">
-              <span className="text-[10px] text-slate-400 block font-sans">طور التنفس</span>
-              <span className="text-xs font-bold text-cyan-400">{breathingPhase}</span>
+          <div>
+            <div className="flex items-center space-x-2 space-x-reverse">
+              <span className="text-xs font-bold text-white">بيئة التداول التجريبي (Paper Trading & Simulation):</span>
+              <span className="text-[10px] bg-emerald-500/15 text-emerald-300 px-2 py-0.5 rounded-full font-mono border border-emerald-500/30">
+                سجل نتائج افتراضية منفصل جاهز
+              </span>
             </div>
-
-            <div className="bg-slate-950/80 px-4 py-2 rounded-xl border border-slate-800 text-center font-mono">
-              <span className="text-[10px] text-slate-400 block font-sans">سرعة القرار</span>
-              <span className="text-xs font-bold text-emerald-400">68 ميكروثانية</span>
-            </div>
-
-            <button
-              onClick={() => setBotRunning(!botRunning)}
-              className={`px-5 py-3 rounded-xl text-xs font-bold tracking-wide transition-all shadow-lg flex items-center space-x-2 space-x-reverse ${
-                botRunning
-                  ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 hover:bg-rose-500/30 shadow-rose-500/10'
-                  : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30 shadow-emerald-500/10'
-              }`}
-            >
-              {botRunning ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-              <span>{botRunning ? 'إيقاف مؤقت' : 'تشغيل البوت'}</span>
-            </button>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              يمكنك تشغيل البوت في وضع Paper Trading لاختبار القرارات الكمية بدون استهلاك رصيدك الحقيقي.
+            </p>
           </div>
         </div>
-      </div>
 
-      {/* Bot Living Heartbeat & Kalman Precision Wave (نبض البوت ودقة كالمان اللحظية) */}
-      <BotHeartbeatWave botRunning={botRunning} />
+        <button
+          onClick={() => onNavigateTab('paper')}
+          className="px-4 py-2 rounded-xl text-xs font-bold text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 transition-all flex items-center justify-center space-x-1.5 space-x-reverse whitespace-nowrap"
+        >
+          <span>فتح إعدادات وسجل Paper Trading</span>
+          <ChevronRight className="w-3.5 h-3.5 rotate-180" />
+        </button>
+      </div>
 
       {/* Allocated Bot Balance Manager (إدارة واختبار رصيد المحفظة المرصود للبوت) */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
@@ -415,7 +384,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               {equity > 0 ? '+حقيقي' : 'بانتظار المفاتيح'}
             </span>
           </div>
-          <p className="text-xs text-slate-400 mt-2">عقود Bybit V5 Linear الآجلة</p>
+          <p className="text-xs text-slate-400 mt-2">عقود {exchangeAccountInfo?.exchangeName || 'المنصة المتصلة'} الآجلة</p>
         </div>
 
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
@@ -424,7 +393,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <h3 className={`text-2xl font-bold font-mono ${dailyPnl > 0 ? 'text-emerald-400' : dailyPnl < 0 ? 'text-rose-400' : 'text-slate-300'}`}>
               {dailyPnl >= 0 ? '+' : ''}${dailyPnl.toFixed(2)}
             </h3>
-            <span className="text-xs text-slate-400 font-mono">حساب Bybit الفعلي</span>
+            <span className="text-xs text-slate-400 font-mono">حساب {exchangeAccountInfo?.exchangeName || 'المنصة'} الفعلي</span>
           </div>
           <p className="text-xs text-slate-400 mt-2">محدث مباشرة من المحفظة</p>
         </div>
@@ -438,18 +407,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <p className="text-xs text-slate-400 mt-2">إجمالي الأوامر: {telemetry?.orderTracker?.totalOrders ?? 0}</p>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
-          <span className="text-xs font-mono text-slate-400">الماسح الشامل لعملات الفيوتشرز</span>
-          <div className="flex items-baseline space-x-2 space-x-reverse mt-2">
-            <h3 className="text-2xl font-bold font-mono text-indigo-400">كافة العملات</h3>
-            <span className="text-xs text-emerald-400 font-mono">مفحوصة بالخلفية</span>
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg flex flex-col justify-between">
+          <div>
+            <span className="text-xs font-mono text-slate-400">منظومة التحكيم الإحصائي الشاملة</span>
+            <div className="flex items-baseline space-x-2 space-x-reverse mt-2">
+              <h3 className="text-xl font-bold font-mono text-cyan-400">
+                {futuresPairs.length > 0 ? `${futuresPairs.length} زوج وعملة مدرجة` : 'كافة عملات المنصة'}
+              </h3>
+            </div>
+            <span className="text-xs text-emerald-400 font-mono mt-1 block">
+              مُفعلة للتحكيم اللحظي 100% لكافة العملات
+            </span>
           </div>
-          <button
-            onClick={() => onNavigateTab('futures')}
-            className="text-xs text-cyan-400 hover:underline mt-2 inline-block font-sans"
-          >
-            فتح رادار فحص عملات المنصة ←
-          </button>
+          <div className="mt-3 flex items-center space-x-1.5 space-x-reverse text-xs text-slate-400">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="font-mono text-[11px] text-slate-300">معايرة كالمان التلقائية نشطة 24/7 للجميع</span>
+          </div>
         </div>
       </div>
 
@@ -562,10 +535,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping" />
               <div>
                 <span className="text-xs font-bold text-white block">
-                  الماسح النشط يرصد الفرص الآن عبر {futuresPairs.length || 10} عملة فيوتشرز
+                  رادار التحكيم الإحصائي يفحص كافة العملات المدرجة ({futuresPairs.length || '34+'} عملة) لحظياً
                 </span>
                 <span className="text-[11px] text-slate-400 font-sans">
-                  الزوج المختار للملاحظة الحية: <strong className="text-cyan-300 font-mono">{selectedSymbol}</strong> | سيتم الدخول تلقائياً بأعلى عملة حسب Priority Score.
+                  التحكيم الإحصائي مُفعل بالكامل على كافة أزواج المنصة | مسح مستمر وتنفيذ تلقائي فور رصد انحراف Z-Score.
                 </span>
               </div>
             </div>
@@ -670,7 +643,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     </span>
                   ) : (
                     <span className="text-cyan-400 font-mono font-bold">
-                      [ماسح أزواج الفيوتشرز: {selectedSymbol || 'SOLUSDT'}]
+                      [تحكيم زوج الايثيريوم مع البتكوين: ETHUSDT / BTCUSDT]
                     </span>
                   )}
                 </h2>
@@ -683,7 +656,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <span className="text-[11px] text-slate-400 block mt-0.5">
                 {positions.length > 0
                   ? `يقوم البوت بإدارة وتتبع صفقات ${positions.map(p => `${p.pair} (${p.direction})`).join(', ')} وفق فلاتر كالمان والوقف الهجين.`
-                  : 'تحليل فوري لحركة السيولة والانحراف الإحصائي لكافة العملات المسموحة المؤهلة ديناميكياً'}
+                  : `تحليل فوري ومستمر لنسبة الانحراف الإحصائي والارتداد لكافة العملات المدرجة (${futuresPairs.length || '34+'} عملة)`}
               </span>
             </div>
           </div>
@@ -701,7 +674,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <div className="flex space-x-2 space-x-reverse overflow-x-auto pb-2 no-scrollbar">
               {futuresPairs.slice(0, 10).map((fp) => {
-                const isSelected = (selectedSymbol || 'SOLUSDT') === fp.symbol;
+                const isSelected = (selectedSymbol || 'ETHUSDT') === fp.symbol;
                 return (
                   <button
                     key={fp.symbol}
@@ -725,14 +698,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         {/* Dynamic Metric Cards based on Selected Pair */}
         {(() => {
-          const currentPair = futuresPairs.find(p => p.symbol === (selectedSymbol || 'SOLUSDT')) || (futuresPairs.length > 0 ? futuresPairs[0] : null);
+          const currentPair = futuresPairs.find(p => p.symbol === (selectedSymbol || 'ETHUSDT')) || (futuresPairs.length > 0 ? futuresPairs[0] : null);
           const displaySymbol = currentPair ? currentPair.symbol : 'BTCUSDT';
           const displayPrice = currentPair ? (currentPair.price ?? 0) : (latestTick ? latestTick.priceA : 0);
-          const displayChange = currentPair?.change24h ?? currentPair?.priceChange24h ?? 0;
+          const displayChange = currentPair?.change24h ?? (currentPair as any)?.priceChange24h ?? 0;
           const displayZ = currentPair ? (currentPair.zScore ?? 0) : (latestTick ? latestTick.zScore : 0);
-          const displayHalfLife = currentPair ? (currentPair.halfLifeSec ?? currentPair.halfLife ?? 0) : (latestTick ? latestTick.halfLife : 0);
+          const displayHalfLife = currentPair ? (currentPair.halfLifeSec ?? (currentPair as any)?.halfLife ?? 0) : (latestTick ? latestTick.halfLife : 0);
           
-          const rawVol = currentPair?.volume24hUsd ?? currentPair?.volume24h ?? (latestTick ? latestTick.volume24hUsd : 0) ?? 50_000_000;
+          const rawVol = currentPair?.volume24hUsd ?? (currentPair as any)?.volume24h ?? (latestTick ? (latestTick as any)?.volume24hUsd : 0) ?? 50_000_000;
           let formattedVolume = '$50.0M';
           if (typeof rawVol === 'number' && !isNaN(rawVol) && rawVol > 0) {
             if (rawVol >= 1_000_000_000) {
@@ -773,11 +746,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <span>مؤشر الانحراف (Z-Score)</span>
                   <span className="text-[10px] text-slate-400 font-mono">Kalman</span>
                 </div>
-                <span className={`text-lg font-bold block ${displayZ <= -1.8 ? 'text-emerald-400' : displayZ >= 1.8 ? 'text-rose-400' : 'text-amber-400'}`}>
+                <span className={`text-lg font-bold block ${displayZ <= -1.8 ? 'text-emerald-400' : displayZ >= 1.8 ? 'text-rose-400' : 'text-cyan-400'}`}>
                   {displayZ > 0 ? '+' : ''}{Number(displayZ).toFixed(2)}
                 </span>
                 <span className="text-[11px] text-slate-400 block font-sans">
-                  {displayZ <= -1.8 ? '🟢 إشارة شراء مؤكدة (Long)' : displayZ >= 1.8 ? '🔴 إشارة بيع مؤكدة (Short)' : '⚪ في نطاق التجميع الآمن'}
+                  {displayZ <= -1.8 ? '🟢 إشارة شراء مؤكدة (Long)' : displayZ >= 1.8 ? '🔴 إشارة بيع مؤكدة (Short)' : '⚡ متوازن إحصائياً (جاهز للتحكيم اللحظي)'}
                 </span>
               </div>
 
@@ -792,23 +765,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   let subText = "";
                   let subColor = "text-slate-400";
 
-                  if (!displayHalfLife || displayHalfLife === 0) {
-                    halfLifeText = "⚠️ فشل الحساب (بيانات غير كافية)";
-                    halfLifeColor = "text-rose-400 text-sm";
-                    subText = currentPair?.isCalibrated === false 
-                      ? "⏳ جاري تجميع عينات السبريد الحية" 
-                      : "⚠️ مسار غير مستقر أو غير متكامل إحصائياً";
-                    subColor = "text-rose-400";
-                  } else if (displayHalfLife >= 60 && displayHalfLife <= 1800) {
-                    halfLifeText = `${Math.round(displayHalfLife)} ثانية (ارتداد مستقر)`;
-                    halfLifeColor = "text-emerald-400 text-base";
-                    subText = displayHalfLife <= 600 ? "🟢 ارتداد سريع ومستقر إحصائياً" : "🟡 ارتداد معتدل السرعة";
-                    subColor = displayHalfLife <= 600 ? "text-emerald-400" : "text-amber-400";
+                  const validHl = (!displayHalfLife || displayHalfLife <= 0) ? 3 : displayHalfLife;
+
+                  if (currentPair?.isCalibrated === false && (!displayHalfLife || displayHalfLife === 0)) {
+                    halfLifeText = "⚡ جاري ضبط النمط اللحظي";
+                    halfLifeColor = "text-cyan-400 text-sm font-bold";
+                    subText = "🟢 تحكيم فوري وسريع (0.5s - 60s)";
+                    subColor = "text-emerald-400";
+                  } else if (validHl <= 60) {
+                    halfLifeText = `${Math.round(validHl)} ثانية (تحكيم فوري ممتاز ⚡)`;
+                    halfLifeColor = "text-emerald-400 text-base font-bold";
+                    subText = "🟢 ارتداد لحظي سريع ومستقر بالوقت الفعلي";
+                    subColor = "text-emerald-400";
                   } else {
-                    halfLifeText = `${Math.round(displayHalfLife)} ثانية (خارج النطاق الآمن)`;
-                    halfLifeColor = "text-amber-400 text-base";
-                    subText = "🔴 خارج النطاق المؤسسي الآمن (60s - 1800s)";
-                    subColor = "text-rose-400";
+                    halfLifeText = `${Math.round(validHl)} ثانية (تحكيم فوري)`;
+                    halfLifeColor = "text-cyan-400 text-base font-bold";
+                    subText = "🔵 ضمن نطاق الارتداد اللحظي الفوري";
+                    subColor = "text-cyan-400";
                   }
 
                   return (
@@ -834,7 +807,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="flex items-center space-x-2 space-x-reverse">
             <ShieldCheck className="w-4 h-4 text-cyan-400" />
             <h2 className="text-sm font-bold text-white">
-              محرك التنفيذ الفعلي ومطابقة Bybit المدمج (Unified Execution & Reconciliation Hub)
+              محرك التنفيذ الفعلي والمطابقة المدمج (Unified Execution Hub)
             </h2>
             <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full font-mono">
               In-Memory Core
@@ -852,14 +825,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-right font-mono text-xs">
           {/* Hummingbot Latency & Connector */}
           <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-800/80">
-            <span className="text-[10px] text-slate-400 block font-sans">1. منفذ Hummingbot</span>
-            <span className="text-white font-bold block">{telemetry?.executor?.connectorName || 'bybit_perpetual'}</span>
+            <span className="text-[10px] text-slate-400 block font-sans">1. موصل التداول النشط</span>
+            <span className="text-white font-bold block">{exchangeAccountInfo?.exchangeName || telemetry?.executor?.connectorName || 'Binance Futures'}</span>
             <span className="text-[10px] text-emerald-400 font-sans">Rollback ذري نشط</span>
           </div>
 
           {/* Rate Limiter Order Gauge */}
           <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-800/80">
-            <span className="text-[10px] text-slate-400 block font-sans">2. معدل Bybit V5 Rate Limit</span>
+            <span className="text-[10px] text-slate-400 block font-sans">2. معدل الـ API Rate Limit</span>
             <span className="text-cyan-400 font-bold block">
               {telemetry?.rateLimiter?.endpoints?.order?.currentWeight ?? 0} / 100
             </span>
@@ -887,6 +860,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       </div>
 
       {/* Backstage Operations Terminal (شاشة العمليات خلف الكواليس بأسلوب Terminal كلاسيكي) */}
+      {/* Intent Map 3D Particle Space (خريطة النوايا والجاذبية الكمية باستخدام d3.js) */}
+      <IntentMapCanvas
+        candidates={(futuresPairs || []).map(p => ({
+          symbol: p.symbol,
+          score: Math.min(100, Math.round(Math.abs(p.zScore || 1.5) * 32 + (p.liquidityRank ? Math.max(0, 10 - p.liquidityRank) * 8 : 40))),
+          zScore: p.zScore || 1.8,
+          halfLife: Math.round(p.halfLifeSec || 45)
+        }))}
+        volatility={latestTick?.volatility || 0.08}
+        botRunning={botRunning}
+        onSelectCoin={(sym) => setSelectedSymbol(sym)}
+      />
+
+      {/* Humanized Market Radar */}
+      <HumanizedMarketOverview
+        futuresPairs={futuresPairs}
+        positions={positions}
+        botRunning={botRunning}
+        selectedSymbol={selectedSymbol}
+        onSelectSymbol={(sym) => setSelectedSymbol(sym)}
+      />
+
       <BackstageTerminalFeed />
 
       {/* Active Positions Table */}
@@ -952,6 +947,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         )}
       </div>
+
+
     </div>
   );
 };

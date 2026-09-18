@@ -10,6 +10,9 @@ export interface KalmanFilterConfig {
 export class KalmanHedgeRatio {
   private _beta: number = 1.0;
   private _alpha: number = 0.0;
+  private _ve: number = 0.0005;
+  private _vw: number = 0.0001;
+  private _delta: number = 0.0001;
   private P: number[][]; // State covariance matrix (2x2)
   private Q: number[][]; // Process noise covariance matrix (2x2)
   private R: number;     // Measurement noise variance
@@ -19,13 +22,17 @@ export class KalmanHedgeRatio {
   private maxHistory: number;
 
   constructor(config: KalmanFilterConfig = {}) {
-    const delta = config.delta ?? 0.001;
-    const ve = config.ve ?? 0.001;
-    const vw = config.vw ?? 0.001;
+    const delta = config.delta ?? 0.0001;
+    const ve = config.ve ?? 0.0005;
+    const vw = config.vw ?? 0.0001;
     
-    const safeDelta = isFinite(delta) && delta > 0 ? delta : 0.001;
-    const safeVe = isFinite(ve) && ve > 0 ? ve : 0.001;
-    const safeVw = isFinite(vw) && vw > 0 ? vw : 0.001;
+    const safeDelta = isFinite(delta) && delta > 0 ? delta : 0.0001;
+    const safeVe = isFinite(ve) && ve > 0 ? ve : 0.0005;
+    const safeVw = isFinite(vw) && vw > 0 ? vw : 0.0001;
+
+    this._delta = safeDelta;
+    this._ve = safeVe;
+    this._vw = safeVw;
 
     this.P = [[safeDelta, 0], [0, safeDelta]];
     this.Q = [[safeVw, 0], [0, safeVw]];
@@ -35,6 +42,23 @@ export class KalmanHedgeRatio {
 
   get beta(): number { return this._beta; }
   get alpha(): number { return this._alpha; }
+  get ve(): number { return this.R; }
+  get vw(): number { return this.Q[0][0]; }
+  get delta(): number { return this._delta; }
+
+  public updateParameters(config: KalmanFilterConfig): void {
+    if (config.ve !== undefined && isFinite(config.ve) && config.ve > 0) {
+      this.R = config.ve;
+      this._ve = config.ve;
+    }
+    if (config.vw !== undefined && isFinite(config.vw) && config.vw > 0) {
+      this.Q = [[config.vw, 0], [0, config.vw]];
+      this._vw = config.vw;
+    }
+    if (config.delta !== undefined && isFinite(config.delta) && config.delta > 0) {
+      this._delta = config.delta;
+    }
+  }
 
   set beta(val: number) {
     const v = AntiCorruptionLayer.validateBeta(val, 'kalman');
@@ -183,7 +207,8 @@ export class KalmanHedgeRatio {
   public getZScore(window = 30): number {
     const clean = AntiCorruptionLayer.sanitizeArray(this.spreadHistory, 'spreadHistory');
 
-    if (clean.length < Math.min(10, window)) {
+    // Lowered from 10 to 3 for fast institutional calibration
+    if (clean.length < Math.min(3, window)) {
       return 0.0;
     }
 

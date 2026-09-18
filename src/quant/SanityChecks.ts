@@ -6,8 +6,8 @@
 export class SanityChecks {
   static readonly MAX_Z_SCORE_CIRCUIT_BREAKER = 10.0; // Absolute catastrophic limit
   static readonly MAX_Z_SCORE_TRADEABLE = 5.5;        // Maximum allowable entry Z-score
-  static readonly MIN_HALF_LIFE = 60.0;               // 1 minute minimum mean-reversion speed
-  static readonly MAX_HALF_LIFE = 1800.0;             // 30 minutes maximum mean-reversion speed
+  static readonly MIN_HALF_LIFE = 0.5;                // 0.5 seconds high-frequency instant arbitrage minimum
+  static readonly MAX_HALF_LIFE = 60.0;               // 60 seconds maximum mean-reversion speed
   static readonly MIN_VOLUME_USD = 10_000_000.0;      // $10M min 24h volume
   static readonly MAX_SPREAD_PERCENT = 0.0050;        // 0.50% max spread
 

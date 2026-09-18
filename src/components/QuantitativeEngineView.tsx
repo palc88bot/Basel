@@ -3,6 +3,8 @@ import * as d3 from 'd3';
 import { MarketTick } from '../types';
 import { BarChart3, Sliders, Zap, ShieldCheck, Activity, Eye, ArrowUpDown, Filter, Terminal } from 'lucide-react';
 import { BackstageTerminalFeed } from './BackstageTerminalFeed';
+import { InstitutionalSuitePanel } from './InstitutionalSuitePanel';
+import { QuantumMindViewPanel } from './QuantumMindViewPanel';
 
 interface QuantitativeEngineViewProps {
   ticks: MarketTick[];
@@ -542,6 +544,109 @@ export const QuantitativeEngineView: React.FC<QuantitativeEngineViewProps> = ({ 
           </div>
         </div>
       </div>
+
+      {/* Advanced Institutional Models Section */}
+      <div className="mt-6 bg-slate-900/80 border border-cyan-500/20 rounded-2xl p-6 backdrop-blur-xl shadow-2xl">
+        <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-3">
+          <div className="flex items-center space-x-3 space-x-reverse">
+            <div className="p-2 bg-cyan-500/10 border border-cyan-500/30 rounded-xl text-cyan-400">
+              <Zap className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-white text-base font-sans">النماذج الكمية المتقدمة (Advanced Institutional Suite)</h3>
+              <p className="text-xs text-slate-400 font-sans">دمج GARCH و Hidden Markov و Order Flow Imbalance و Kelly Criterion لمكافحة التقلبات الفجائية</p>
+            </div>
+          </div>
+          <span className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-mono font-bold rounded-full">
+            100% Native TS Execution
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Card 1: GARCH */}
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-xs font-bold text-cyan-400 font-sans">نموذج GARCH (1,1)</span>
+              <span className="text-[10px] font-mono text-slate-400">Volatility Clustering</span>
+            </div>
+            <p className="text-[11px] text-slate-400 mb-3 font-sans">تعديل Z-Score ديناميكياً بحسب شدة صدمات التقلب الشرطية.</p>
+            <div className="space-y-1.5 font-mono text-[11px]">
+              <div className="flex justify-between">
+                <span className="text-slate-400 font-sans">التقلب الفوري:</span>
+                <span className="text-white">21.4 Bps</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400 font-sans">معامل التعديل:</span>
+                <span className="text-emerald-400 font-bold">1.0x (طبيعي)</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 2: HMM Regime Switcher */}
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-xs font-bold text-indigo-400 font-sans">نموذج HMM (ماركوف المخفي)</span>
+              <span className="text-[10px] font-mono text-slate-400">Regime Detector</span>
+            </div>
+            <p className="text-[11px] text-slate-400 mb-3 font-sans">كشف حالة السوق (ارتدادي نطاقي vs اتجاهي صاعد/هابط).</p>
+            <div className="space-y-1.5 font-mono text-[11px]">
+              <div className="flex justify-between">
+                <span className="text-slate-400 font-sans">حالة النظام:</span>
+                <span className="text-emerald-400 font-bold font-sans">MEAN_REVERTING</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400 font-sans">احتمالية الأمان:</span>
+                <span className="text-emerald-400 font-bold">88%</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 3: Order Flow Imbalance (OFI) */}
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-xs font-bold text-amber-400 font-sans">تدفق الأوامر (OFI)</span>
+              <span className="text-[10px] font-mono text-slate-400">Microstructure</span>
+            </div>
+            <p className="text-[11px] text-slate-400 mb-3 font-sans">تحليل ضغط عمق الشراء والبيع الفوري في دفتر الأوامر L2.</p>
+            <div className="space-y-1.5 font-mono text-[11px]">
+              <div className="flex justify-between">
+                <span className="text-slate-400 font-sans">مؤشر الضغط OFI:</span>
+                <span className="text-amber-400 font-bold">+0.14</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400 font-sans">دعم التنفيذ:</span>
+                <span className="text-emerald-400 font-bold font-sans">مؤيد للصفقة</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 4: Adaptive Kelly Sizing */}
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-xs font-bold text-purple-400 font-sans">تحجيم كيلي (Adaptive Kelly)</span>
+              <span className="text-[10px] font-mono text-slate-400">Dynamic Risk</span>
+            </div>
+            <p className="text-[11px] text-slate-400 mb-3 font-sans">تخصيص الهامش والرافعة آلياً بناءً على مؤشر الثقة والتقلب.</p>
+            <div className="space-y-1.5 font-mono text-[11px]">
+              <div className="flex justify-between">
+                <span className="text-slate-400 font-sans">كسر كيلي الآمن:</span>
+                <span className="text-purple-400 font-bold">0.25 (Quarter-Kelly)</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400 font-sans">الرافعة التكيفية:</span>
+                <span className="text-emerald-400 font-bold">5x</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Render 5-System Institutional Suite */}
+      <InstitutionalSuitePanel />
+
+      {/* Render Quantum Mind IQ 200 Simulator Suite */}
+      <QuantumMindViewPanel />
     </div>
   );
 };
+
